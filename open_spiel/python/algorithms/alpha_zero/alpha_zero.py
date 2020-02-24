@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 # Copyright 2019 DeepMind Technologies Ltd. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,6 +35,7 @@ from __future__ import print_function
 import collections
 import functools
 import math
+from typing import Sequence
 
 import numpy as np
 
@@ -44,10 +46,39 @@ from open_spiel.python.algorithms import masked_softmax
 from open_spiel.python.algorithms import mcts
 import pyspiel
 
-MCTSResult = collections.namedtuple("MCTSResult",
-                                    "state_feature target_value target_policy")
 
-LossValues = collections.namedtuple("LossValues", "total policy value l2")
+class TrainInput(collections.namedtuple(
+    "TrainInput", "observation legals_mask policy value")):
+  """Inputs for training the Model."""
+
+  @staticmethod
+  def stack(train_inputs):
+    observation, legals_mask, policy, value = zip(*train_inputs)
+    return TrainInput(
+        np.array(observation),
+        np.array(legals_mask),
+        np.array(policy),
+        np.expand_dims(np.array(value), 1))
+
+
+class Losses(collections.namedtuple("Losses", "policy value l2")):
+  """Losses from a training step."""
+
+  @property
+  def total(self):
+    return self.policy + self.value + self.l2
+
+  def __str__(self):
+    return ("Losses(total: {:.3f}, policy: {:.3f}, value: {:.3f}, "
+            "l2: {:.3f})").format(self.total, self.policy, self.value, self.l2)
+
+  def __add__(self, other):
+    return Losses(self.policy + other.policy,
+                  self.value + other.value,
+                  self.l2 + other.l2)
+
+  def __truediv__(self, n):
+    return Losses(self.policy / n, self.value / n, self.l2 / n)
 
 
 class AlphaZero(object):
@@ -60,6 +91,7 @@ class AlphaZero(object):
   def __init__(self,
                game,
                bot,
+               model,
                replay_buffer_capacity=int(1e6),
                action_selection_transition=30):
     """AlphaZero constructor.
@@ -67,6 +99,7 @@ class AlphaZero(object):
     Args:
       game: a pyspiel.Game object
       bot: an MCTSBot object.
+      model: A Model.
       replay_buffer_capacity: the size of the replay buffer in which the results
         of self-play games are stored.
       action_selection_transition: an integer representing the move number in a
@@ -96,8 +129,9 @@ class AlphaZero(object):
     if game.num_players() != 2:
       raise ValueError("Game must have exactly 2 players.")
 
-    self.bot = bot
     self.game = game
+    self.bot = bot
+    self.model = model
     self.replay_buffer = dqn.ReplayBuffer(replay_buffer_capacity)
     self.action_selection_transition = action_selection_transition
 
@@ -117,25 +151,20 @@ class AlphaZero(object):
 
     Returns:
       A list of length num_training_epochs. Each element of this list is
-        another list containing LossValues tuples, one for every training
-        iteration.
+        a Losses tuples, averaged per epoch.
     """
-    # The AlphaZero pseudocode resets the optimizer state before training.
-    optim = self.bot.evaluator.optimizer
-    tf.variables_initializer(optim.variables())
-    tf.train.get_or_create_global_step().assign(0)
-
     num_epoch_iters = math.ceil(len(self.replay_buffer) / float(batch_size))
     losses = []
     for epoch in range(num_training_epochs):
       epoch_losses = []
       for _ in range(num_epoch_iters):
         train_data = self.replay_buffer.sample(batch_size)
-        epoch_losses.append(self.bot.evaluator.update(train_data))
+        epoch_losses.append(self.model.update(train_data))
 
+      epoch_losses = sum(epoch_losses, Losses(0, 0, 0)) / len(epoch_losses)
       losses.append(epoch_losses)
       if verbose:
-        self._print_mean_epoch_losses(epoch, epoch_losses)
+        print("Epoch {}: {}".format(epoch, epoch_losses))
 
     return losses
 
@@ -152,28 +181,28 @@ class AlphaZero(object):
   def _self_play_single(self):
     """Play a single game and add it to the replay buffer."""
     state = self.game.new_initial_state()
-    policy_targets, state_features = [], []
+    trajectory = []
 
     while not state.is_terminal():
-      root_node = self.bot.mcts_search(state)
-      state_features.append(self.bot.evaluator.feature_extractor(state))
+      root = self.bot.mcts_search(state)
       target_policy = np.zeros(self.game.num_distinct_actions(),
                                dtype=np.float32)
-      for child in root_node.children:
+      for child in root.children:
         target_policy[child.action] = child.explore_count
       target_policy /= sum(target_policy)
-      policy_targets.append(target_policy)
 
-      action = self._select_action(root_node.children, len(state.history()))
+      trajectory.append(TrainInput(
+          state.observation_tensor(), state.legal_actions_mask(),
+          target_policy, root.total_reward / root.explore_count))
+
+      action = self._select_action(root.children, len(trajectory))
       state.apply_action(action)
 
     terminal_rewards = state.rewards()
-    for i, (feature, pol) in enumerate(zip(state_features, policy_targets)):
-      value = terminal_rewards[i % 2]
+    for state in trajectory:
       self.replay_buffer.add(
-          MCTSResult(state_feature=feature,
-                     target_policy=pol,
-                     target_value=value))
+          TrainInput(state.observation, state.legals_mask, state.policy,
+                     terminal_rewards[0]))
 
   def _select_action(self, children, game_history_len):
     explore_counts = [(child.explore_count, child.action) for child in children]
@@ -185,20 +214,6 @@ class AlphaZero(object):
       _, action = max(explore_counts)
     return action
 
-  def _print_mean_epoch_losses(self, epoch, losses):
-    total_loss, policy_loss, value_loss, l2_loss = 0, 0, 0, 0
-    for l in losses:
-      t, p, v, l2 = l
-      total_loss += t
-      policy_loss += p
-      value_loss += v
-      l2_loss += l2
-    n = len(losses)
-    print(("Epoch {0} mean losses. Total: {1:.3g}, Policy: {2:.3g}, "
-           "Value: {3:.3g}, L2: {4:.3g}").format(
-               epoch, total_loss / n, policy_loss / n, value_loss / n,
-               l2_loss / n))
-
 
 def np_softmax(logits):
   max_logit = np.amax(logits, axis=-1, keepdims=True)
@@ -209,120 +224,92 @@ def np_softmax(logits):
 class AlphaZeroKerasEvaluator(mcts.Evaluator):
   """An AlphaZero MCTS Evaluator."""
 
-  def __init__(self,
-               keras_model,
-               l2_regularization=1e-4,
-               optimizer=tf.train.AdamOptimizer(learning_rate=0.005),
-               device="cpu",
-               feature_extractor=None):
-    """An AlphaZero MCTS Evaluator.
+  def __init__(self, game, model):
+    """An AlphaZero MCTS Evaluator."""
+    self.model = model
+    self._input_shape = game.observation_tensor_shape()
+    self._num_actions = game.num_distinct_actions()
+
+  @functools.lru_cache(maxsize=2**12)
+  def value_and_prior(self, state):
+    # Make a singleton batch
+    obs = np.expand_dims(state.observation_tensor(), 0)
+    mask = np.expand_dims(state.legal_actions_mask(), 0)
+    value, policy = self.model.inference(obs, mask)
+    return value[0, 0], policy[0]  # Unpack batch
+
+  def evaluate(self, state):
+    value, _ = self.value_and_prior(state)
+    return np.array([value, -value])
+
+  def prior(self, state):
+    _, policy = self.value_and_prior(state)
+    return [(action, policy[action]) for action in state.legal_actions()]
+
+
+class Model(object):
+  """A wrapper around a keras model, and optimizer."""
+
+  def __init__(self, keras_model, l2_regularization, learning_rate, device):
+    """A wrapper around a keras model, and optimizer.
 
     Args:
       keras_model: a Keras Model object.
       l2_regularization: the amount of l2 regularization to use during training.
-      optimizer: a TensorFlow optimizer object.
+      learning_rate: a learning rate for the adam optimizer.
       device: The device used to run the keras_model during evaluation and
         training. Possible values are 'cpu', 'gpu', or a tf.device(...) object.
-      feature_extractor: a function which takes as argument the game state and
-        returns a numpy tensor which the keras_model can accept as input. If
-        None, then the default features will be used, which is the
-        observation_tensor() state method, reshaped to match the keras_model
-        input shape (if possible). The keras_model is always evaluated on the
-        output of this function.
-    Raises:
-      ValueError: if incorrect inputs are supplied.
     """
-
-    self.model = keras_model
-
-    self.input_shape = list(self.model.input_shape)
-    self.input_shape[0] = 1  # Keras sets the batch dim to None
-    _, (_, self.num_actions) = self.model.output_shape
-
-    self.l2_regularization = l2_regularization
-    self.optimizer = optimizer
-
     if device == "gpu":
       if not tf.test.is_gpu_available():
         raise ValueError("GPU support is unavailable.")
-      self.device = tf.device("gpu:0")
+      self._device = tf.device("gpu:0")
     elif device == "cpu":
-      self.device = tf.device("cpu:0")
+      self._device = tf.device("cpu:0")
     else:
-      self.device = device
+      self._device = device
+    self._keras_model = keras_model
+    self._optimizer = tf.train.AdamOptimizer(learning_rate)
+    self._l2_regularization = l2_regularization
 
-    if feature_extractor is None:
-      self.feature_extractor = _create_default_feature_extractor(
-          self.input_shape)
-    else:
-      self.feature_extractor = feature_extractor
+  def inference(self, obs, mask):
+    with self._device:
+      value, policy = self._keras_model(obs)
+    policy = masked_softmax.np_masked_softmax(np.array(policy), np.array(mask))
+    return value, policy
 
-  @functools.lru_cache(maxsize=2**12)
-  def value_and_prior(self, state):
-    state_feature = self.feature_extractor(state)
-    with self.device:
-      value, policy = self.model(state_feature)
+  def update(self, train_inputs: Sequence[TrainInput]):
+    """Run an update step."""
+    batch = TrainInput.stack(train_inputs)
 
-    # renormalize policy over legal actions
-    policy = np.array(policy)[0]
-    mask = np.array(state.legal_actions_mask())
-    policy = masked_softmax.np_masked_softmax(policy, mask)
-    policy = [(action, policy[action]) for action in state.legal_actions()]
-
-    # value is required to be array over players
-    value = value[0, 0].numpy()
-    if state.current_player() == 0:
-      values = np.array([value, -value])
-    else:
-      values = np.array([-value, value])
-
-    return (values, policy)
-
-  def evaluate(self, state):
-    return self.value_and_prior(state)[0]
-
-  def prior(self, state):
-    return self.value_and_prior(state)[1]
-
-  def update(self, training_examples):
-    state_features = np.vstack([f for (f, _, _) in training_examples])
-    value_targets = np.vstack([v for (_, v, _) in training_examples])
-    policy_targets = np.vstack([p for (_, _, p) in training_examples])
-
-    with self.device:
+    with self._device:
       with tf.GradientTape() as tape:
-        values, policy_logits = self.model(state_features, training=True)
+        values, policy_logits = self._keras_model(
+            batch.observation, training=True)
         loss_value = tf.losses.mean_squared_error(
-            values, tf.stop_gradient(value_targets))
+            values, tf.stop_gradient(batch.value))
         loss_policy = tf.nn.softmax_cross_entropy_with_logits_v2(
-            logits=policy_logits, labels=tf.stop_gradient(policy_targets))
+            logits=policy_logits, labels=tf.stop_gradient(batch.policy))
         loss_policy = tf.reduce_mean(loss_policy)
         loss_l2 = 0
-        for weights in self.model.trainable_variables:
-          loss_l2 += self.l2_regularization * tf.nn.l2_loss(weights)
+        for weights in self._keras_model.trainable_variables:
+          loss_l2 += self._l2_regularization * tf.nn.l2_loss(weights)
         loss = loss_policy + loss_value + loss_l2
 
-      grads = tape.gradient(loss, self.model.trainable_variables)
+      grads = tape.gradient(loss, self._keras_model.trainable_variables)
 
-      self.optimizer.apply_gradients(
-          zip(grads, self.model.trainable_variables),
+      self._optimizer.apply_gradients(
+          zip(grads, self._keras_model.trainable_variables),
           global_step=tf.train.get_or_create_global_step())
 
-    self.value_and_prior.cache_clear()
-
-    return LossValues(total=float(loss),
-                      policy=float(loss_policy),
-                      value=float(loss_value),
-                      l2=float(loss_l2))
+    return Losses(policy=float(loss_policy), value=float(loss_value),
+                  l2=float(loss_l2))
 
 
-def _create_default_feature_extractor(shape):
-
-  def feature_extractor(state):
-    obs = state.observation_tensor()
-    return np.array(obs, dtype=np.float32).reshape(shape)
-
-  return feature_extractor
+def cascade(x, fns):
+  for fn in fns:
+    x = fn(x)
+  return x
 
 
 def keras_resnet(input_shape,
@@ -356,108 +343,60 @@ def keras_resnet(input_shape,
     A keras Model with a single input and two outputs (value head, policy head).
     The policy is a flat distribution over actions.
   """
-  inputs = tf.keras.Input(shape=input_shape, name="input")
-  x = inputs
+  def residual_layer(inputs, num_filters, kernel_size):
+    return cascade(inputs, [
+        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Activation(activation),
+        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
+        tf.keras.layers.BatchNormalization(axis=-1),
+        lambda x: tf.keras.layers.add([x, inputs]),
+        tf.keras.layers.Activation(activation),
+    ])
+
+  def resnet_body(inputs, num_filters, kernel_size):
+    x = cascade(inputs, [
+        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Activation(activation),
+    ])
+    for _ in range(num_residual_blocks):
+      x = residual_layer(x, num_filters, kernel_size)
+    return x
+
+  def resnet_value_head(inputs, hidden_size):
+    return cascade(inputs, [
+        tf.keras.layers.Conv2D(filters=1, kernel_size=1),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Activation(activation),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(hidden_size, activation),
+        tf.keras.layers.Dense(1, activation="tanh", name="value"),
+    ])
+
+  def resnet_policy_head(inputs, num_classes):
+    return cascade(inputs, [
+        tf.keras.layers.Conv2D(filters=2, kernel_size=1),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Activation(activation),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(num_classes, name="policy"),
+    ])
+
+  input_size = int(np.prod(input_shape))
+  inputs = tf.keras.Input(shape=input_size, name="input")
+  torso = tf.keras.layers.Reshape(input_shape)(inputs)
   # Note: Keras with TensorFlow 1.15 does not support the data_format arg on CPU
   # for convolutions. Hence why this transpose is needed.
   if data_format == "channels_first":
-    x = tf.keras.backend.permute_dimensions(inputs, (0, 2, 3, 1))
-  x = _resnet_body(x,
-                   num_filters=num_filters,
-                   num_residual_blocks=num_residual_blocks,
-                   kernel_size=3,
-                   activation=activation)
-  value_head = _resnet_value_head(x,
-                                  hidden_size=value_head_hidden_size,
-                                  activation=activation)
-  policy_head = _resnet_mlp_policy_head(x, num_actions, activation=activation)
+    torso = tf.keras.backend.permute_dimensions(torso, (0, 2, 3, 1))
+  torso = resnet_body(torso, num_filters, 3)
+  value_head = resnet_value_head(torso, value_head_hidden_size)
+  policy_head = resnet_policy_head(torso, num_actions)
   return tf.keras.Model(inputs=inputs, outputs=[value_head, policy_head])
 
 
-def _residual_layer(inputs, num_filters, kernel_size, activation):
-  """Residual_layer."""
-  x = inputs
-  x = tf.keras.layers.Conv2D(num_filters,
-                             kernel_size=kernel_size,
-                             padding="same",
-                             strides=1,
-                             kernel_initializer="he_uniform")(x)
-  x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Activation(activation)(x)
-  x = tf.keras.layers.Conv2D(num_filters,
-                             kernel_size=kernel_size,
-                             padding="same",
-                             strides=1,
-                             kernel_initializer="he_uniform")(x)
-  return tf.keras.layers.BatchNormalization(axis=-1)(x)
-
-
-def _residual_tower(inputs, num_res_blocks, num_filters, kernel_size,
-                    activation):
-  """Residual_tower."""
-  x = inputs
-  for _ in range(num_res_blocks):
-    y = _residual_layer(x, num_filters, kernel_size, activation)
-    y = _residual_layer(x, num_filters, kernel_size, activation)
-    x = tf.keras.layers.add([x, y])
-    x = tf.keras.layers.Activation(activation)(x)
-
-  return x
-
-
-def _resnet_body(inputs, num_residual_blocks, num_filters, kernel_size,
-                 activation):
-  """Resnet_body."""
-  x = inputs
-  x = tf.keras.layers.Conv2D(num_filters,
-                             kernel_size=kernel_size,
-                             padding="same",
-                             strides=1,
-                             kernel_initializer="he_uniform")(x)
-  x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Activation(activation)(x)
-  x = _residual_tower(x, num_residual_blocks, num_filters, kernel_size,
-                      activation)
-  return x
-
-
-def _resnet_value_head(inputs, hidden_size, activation):
-  """Resnet_value_head."""
-  x = inputs
-  x = tf.keras.layers.Conv2D(filters=1,
-                             kernel_size=1,
-                             strides=1,
-                             kernel_initializer="he_uniform")(x)
-  x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Activation(activation)(x)
-  x = tf.keras.layers.Flatten()(x)
-  x = tf.keras.layers.Dense(hidden_size,
-                            activation=activation,
-                            kernel_initializer="he_uniform")(x)
-  x = tf.keras.layers.Dense(1,
-                            activation="tanh",
-                            kernel_initializer="he_uniform",
-                            name="value")(x)
-  return x
-
-
-def _resnet_mlp_policy_head(inputs, num_classes, activation):
-  """Resnet_mlp_policy_head."""
-  x = inputs
-  x = tf.keras.layers.Conv2D(filters=2,
-                             kernel_size=1,
-                             strides=1,
-                             kernel_initializer="he_uniform")(x)
-  x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Activation(activation)(x)
-  x = tf.keras.layers.Flatten()(x)
-  x = tf.keras.layers.Dense(num_classes,
-                            kernel_initializer="he_uniform",
-                            name="policy")(x)
-  return x
-
-
-def keras_mlp(input_size,
+def keras_mlp(input_shape,
               num_actions,
               num_layers=2,
               num_hidden=128,
@@ -465,7 +404,8 @@ def keras_mlp(input_size,
   """A simple MLP implementation with both a value and policy head.
 
   Arguments:
-    input_size: An integer specifying the size of the input vector.
+    input_shape: A tuple of 3 integers specifying the non-batch dimensions of
+      input tensor shape.
     num_actions: The determines the output size of the policy head.
     num_layers: The number of dense layers before the policy and value heads.
     num_hidden: the number of hidden units in the dense layers.
@@ -476,17 +416,11 @@ def keras_mlp(input_size,
     A keras Model with a single input and two outputs (value head, policy head).
     The policy is a flat distribution over actions.
   """
-  inputs = tf.keras.Input(shape=(input_size,), name="input")
-  x = inputs
+  input_size = int(np.prod(input_shape))
+  inputs = tf.keras.Input(shape=input_size, name="input")
+  torso = inputs
   for _ in range(num_layers):
-    x = tf.keras.layers.Dense(num_hidden,
-                              kernel_initializer="he_uniform",
-                              activation=activation)(x)
-  policy = tf.keras.layers.Dense(num_actions,
-                                 kernel_initializer="he_uniform",
-                                 name="policy")(x)
-  value = tf.keras.layers.Dense(1,
-                                kernel_initializer="he_uniform",
-                                activation="tanh",
-                                name="value")(x)
+    torso = tf.keras.layers.Dense(num_hidden, activation=activation)(torso)
+  policy = tf.keras.layers.Dense(num_actions, name="policy")(torso)
+  value = tf.keras.layers.Dense(1, activation="tanh", name="value")(torso)
   return tf.keras.Model(inputs=inputs, outputs=[value, policy])
