@@ -120,6 +120,9 @@ std::string PhantomTTTState::ViewToString(Player player) const {
 }
 
 std::string PhantomTTTState::ActionSequenceToString(Player player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
   std::string str;
   for (const auto& player_with_action : action_sequence_) {
     if (player_with_action.first == player) {
@@ -144,7 +147,9 @@ std::string PhantomTTTState::ActionSequenceToString(Player player) const {
 std::string PhantomTTTState::InformationStateString(Player player) const {
   SPIEL_CHECK_GE(player, 0);
   SPIEL_CHECK_LT(player, num_players_);
-  return ViewToString(player) + "\n" + ActionSequenceToString(player);
+  return ViewToString(player) + "\n"
+      + std::to_string(history_.size()) + "\n"
+      + ActionSequenceToString(player);
 }
 
 void PhantomTTTState::InformationStateTensor(

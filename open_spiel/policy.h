@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_POLICY_H_
-#define THIRD_PARTY_OPEN_SPIEL_POLICY_H_
+#ifndef OPEN_SPIEL_POLICY_H_
+#define OPEN_SPIEL_POLICY_H_
 
 #include <string>
 #include <unordered_map>
@@ -26,6 +26,20 @@
 #include "open_spiel/spiel_utils.h"
 
 namespace open_spiel {
+
+// Returns the probability for the specified action, or -1 if not found.
+double GetProb(const ActionsAndProbs& action_and_probs, Action action);
+
+// Set an action probability for the specified action.
+void SetProb(ActionsAndProbs* actions_and_probs, Action action, double prob);
+
+// Helper for deterministic policies: returns the single action if the policy
+// is deterministic, otherwise returns kInvalidAction.
+Action GetAction(const ActionsAndProbs& action_and_probs);
+
+// Returns a policy where every legal action has probability 1 / (number of
+// legal actions).
+ActionsAndProbs UniformStatePolicy(const State& state);
 
 // A general policy object. A policy is a mapping from states to list of
 // (action, prob) pairs for all the legal actions at the state.
@@ -134,6 +148,23 @@ class TabularPolicy : public Policy {
     }
   }
 
+  // Set the probability for action at the info state. If the info state is not
+  // in the policy, it is added. If the action is not in the info state policy,
+  // it is added. Otherwise it is modified.
+  void SetProb(const std::string& info_state, Action action, double prob) {
+    auto iter = policy_table_.find(info_state);
+    if (iter == policy_table_.end()) {
+      auto iter_and_bool = policy_table_.insert({info_state, {}});
+      iter = iter_and_bool.first;
+    }
+    open_spiel::SetProb(&(iter->second), action, prob);
+  }
+
+  void SetStatePolicy(const std::string& info_state,
+                      const ActionsAndProbs& state_policy) {
+    policy_table_[info_state] = state_policy;
+  }
+
   std::unordered_map<std::string, ActionsAndProbs>& PolicyTable() {
     return policy_table_;
   }
@@ -162,19 +193,10 @@ class TabularPolicy : public Policy {
 // tabular version, except that this works for large games.
 class UniformPolicy : public Policy {
  public:
-  ActionsAndProbs GetStatePolicy(const State& state) const {
-    ActionsAndProbs probs;
-    std::vector<Action> actions = state.LegalActions();
-    probs.reserve(actions.size());
-    absl::c_for_each(actions, [&probs, &actions](Action a) {
-      probs.push_back({a, 1. / static_cast<double>(actions.size())});
-    });
-    return probs;
+  ActionsAndProbs GetStatePolicy(const State& state) const override {
+    return UniformStatePolicy(state);
   }
 };
-
-// Returns the probability for the specified action, or -1 if not found.
-double GetProb(const ActionsAndProbs& action_and_probs, Action action);
 
 // Helper functions that generate policies for testing.
 TabularPolicy GetEmptyTabularPolicy(const Game& game,
@@ -183,6 +205,8 @@ TabularPolicy GetUniformPolicy(const Game& game);
 TabularPolicy GetRandomPolicy(const Game& game, int seed = 0);
 TabularPolicy GetFirstActionPolicy(const Game& game);
 
+std::string PrintPolicy(const ActionsAndProbs& policy);
+
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_POLICY_H_
+#endif  // OPEN_SPIEL_POLICY_H_

@@ -13,414 +13,527 @@
 # limitations under the License.
 
 # Lint as: python3
-# Copyright 2019 DeepMind Technologies Ltd. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""AlphaZero Bot implemented in TensorFlow."""
+"""A basic AlphaZero implementation.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+This implements the AlphaZero training algorithm. It spawns N actors which feed
+trajectories into a replay buffer which are consumed by a learner. The learner
+generates new weights, saves a checkpoint, and tells the actors to update. There
+are also M evaluators running games continuously against a standard MCTS+Solver,
+though each at a different difficulty (ie number of simulations for MCTS).
+
+Due to the multi-process nature of this algorithm the logs are written to files,
+one per process. The learner logs are also output to stdout. The checkpoints are
+also written to the same directory.
+
+Links to relevant articles/papers:
+  https://deepmind.com/blog/article/alphago-zero-starting-scratch has an open
+    access link to the AlphaGo Zero nature paper.
+  https://deepmind.com/blog/article/alphazero-shedding-new-light-grand-games-chess-shogi-and-go
+    has an open access link to the AlphaZero science paper.
+"""
 
 import collections
+import datetime
 import functools
-import math
-from typing import Sequence
+import itertools
+import json
+import os
+import random
+import sys
+import tempfile
+import time
+import traceback
 
 import numpy as np
 
-import tensorflow.compat.v1 as tf
-
-from open_spiel.python.algorithms import dqn
-from open_spiel.python.algorithms import masked_softmax
 from open_spiel.python.algorithms import mcts
+from open_spiel.python.algorithms.alpha_zero import evaluator as evaluator_lib
+from open_spiel.python.algorithms.alpha_zero import model as model_lib
 import pyspiel
+from open_spiel.python.utils import data_logger
+from open_spiel.python.utils import file_logger
+from open_spiel.python.utils import spawn
+from open_spiel.python.utils import stats
 
 
-class TrainInput(collections.namedtuple(
-    "TrainInput", "observation legals_mask policy value")):
-  """Inputs for training the Model."""
+class TrajectoryState(object):
+  """A particular point along a trajectory."""
 
-  @staticmethod
-  def stack(train_inputs):
-    observation, legals_mask, policy, value = zip(*train_inputs)
-    return TrainInput(
-        np.array(observation),
-        np.array(legals_mask),
-        np.array(policy),
-        np.expand_dims(np.array(value), 1))
-
-
-class Losses(collections.namedtuple("Losses", "policy value l2")):
-  """Losses from a training step."""
-
-  @property
-  def total(self):
-    return self.policy + self.value + self.l2
-
-  def __str__(self):
-    return ("Losses(total: {:.3f}, policy: {:.3f}, value: {:.3f}, "
-            "l2: {:.3f})").format(self.total, self.policy, self.value, self.l2)
-
-  def __add__(self, other):
-    return Losses(self.policy + other.policy,
-                  self.value + other.value,
-                  self.l2 + other.l2)
-
-  def __truediv__(self, n):
-    return Losses(self.policy / n, self.value / n, self.l2 / n)
+  def __init__(self, observation, current_player, legals_mask, action, policy,
+               value):
+    self.observation = observation
+    self.current_player = current_player
+    self.legals_mask = legals_mask
+    self.action = action
+    self.policy = policy
+    self.value = value
 
 
-class AlphaZero(object):
-  """AlphaZero implementation.
+class Trajectory(object):
+  """A sequence of observations, actions and policies, and the outcomes."""
 
-  Follows the pseudocode AlphaZero implementation given in the paper
-  DOI:10.1126/science.aar6404.
-  """
+  def __init__(self):
+    self.states = []
+    self.returns = None
 
-  def __init__(self,
-               game,
-               bot,
-               model,
-               replay_buffer_capacity=int(1e6),
-               action_selection_transition=30):
-    """AlphaZero constructor.
+  def add(self, information_state, action, policy):
+    self.states.append((information_state, action, policy))
 
-    Args:
-      game: a pyspiel.Game object
-      bot: an MCTSBot object.
-      model: A Model.
-      replay_buffer_capacity: the size of the replay buffer in which the results
-        of self-play games are stored.
-      action_selection_transition: an integer representing the move number in a
-        game of self-play when greedy action selection is used. Before this,
-        actions are sampled from the MCTS policy.
 
-    Raises:
-      ValueError: if incorrect inputs are supplied.
-    """
+class Buffer(object):
+  """A fixed size buffer that keeps the newest values."""
 
-    game_info = game.get_type()
-    if game.num_players() != 2:
-      raise ValueError("Game must be a 2-player game")
-    if game_info.chance_mode != pyspiel.GameType.ChanceMode.DETERMINISTIC:
-      raise ValueError("The game must be a Deterministic one, not {}".format(
-          game.chance_mode))
-    if (game_info.information !=
-        pyspiel.GameType.Information.PERFECT_INFORMATION):
-      raise ValueError(
-          "The game must be a perfect information one, not {}".format(
-              game.information))
-    if game_info.dynamics != pyspiel.GameType.Dynamics.SEQUENTIAL:
-      raise ValueError("The game must be turn-based, not {}".format(
-          game.dynamics))
-    if game_info.utility != pyspiel.GameType.Utility.ZERO_SUM:
-      raise ValueError("The game must be 0-sum, not {}".format(game.utility))
-    if game.num_players() != 2:
-      raise ValueError("Game must have exactly 2 players.")
+  def __init__(self, max_size):
+    self.max_size = max_size
+    self.data = []
+    self.total_seen = 0  # The number of items that have passed through.
 
-    self.game = game
-    self.bot = bot
-    self.model = model
-    self.replay_buffer = dqn.ReplayBuffer(replay_buffer_capacity)
-    self.action_selection_transition = action_selection_transition
+  def __len__(self):
+    return len(self.data)
 
-  def update(self, num_training_epochs=10, batch_size=128, verbose=False):
-    """Trains the neural net.
+  def __bool__(self):
+    return bool(self.data)
 
-    Randomly sampls data from the replay buffer. An update resets the optimizer
-    state.
+  def append(self, val):
+    return self.extend([val])
 
-    Args:
-      num_training_epochs: An epoch represents one pass over the training data.
-        The total number training iterations this corresponds to is
-        num_training_epochs * len(replay_buffer)/batch_size.
-      batch_size: the number of examples sampled from the replay buffer and
-        used for each net training iteration.
-      verbose: whether to print training metrics during training.
+  def extend(self, batch):
+    batch = list(batch)
+    self.total_seen += len(batch)
+    self.data.extend(batch)
+    self.data[:-self.max_size] = []
 
-    Returns:
-      A list of length num_training_epochs. Each element of this list is
-        a Losses tuples, averaged per epoch.
-    """
-    num_epoch_iters = math.ceil(len(self.replay_buffer) / float(batch_size))
+  def sample(self, count):
+    return random.sample(self.data, count)
+
+
+class Config(collections.namedtuple(
+    "Config", [
+        "game",
+        "path",
+        "learning_rate",
+        "weight_decay",
+        "train_batch_size",
+        "replay_buffer_size",
+        "replay_buffer_reuse",
+        "max_steps",
+        "checkpoint_freq",
+        "actors",
+        "evaluators",
+        "evaluation_window",
+        "eval_levels",
+
+        "uct_c",
+        "max_simulations",
+        "policy_alpha",
+        "policy_epsilon",
+        "temperature",
+        "temperature_drop",
+
+        "nn_model",
+        "nn_width",
+        "nn_depth",
+        "observation_shape",
+        "output_size",
+
+        "quiet",
+    ])):
+  """A config for the model/experiment."""
+  pass
+
+
+def _init_model_from_config(config):
+  return model_lib.Model.build_model(
+      config.nn_model,
+      config.observation_shape,
+      config.output_size,
+      config.nn_width,
+      config.nn_depth,
+      config.weight_decay,
+      config.learning_rate,
+      config.path)
+
+
+def watcher(fn):
+  """A decorator to fn/processes that gives a logger and logs exceptions."""
+  @functools.wraps(fn)
+  def _watcher(*, config, num=None, **kwargs):
+    """Wrap the decorated function."""
+    name = fn.__name__
+    if num is not None:
+      name += "-" + str(num)
+    with file_logger.FileLogger(config.path, name, config.quiet) as logger:
+      print("{} started".format(name))
+      logger.print("{} started".format(name))
+      try:
+        return fn(config=config, logger=logger, **kwargs)
+      except Exception as e:
+        logger.print("\n".join([
+            "",
+            " Exception caught ".center(60, "="),
+            traceback.format_exc(),
+            "=" * 60,
+        ]))
+        print("Exception caught in {}: {}".format(name, e))
+        raise
+      finally:
+        logger.print("{} exiting".format(name))
+        print("{} exiting".format(name))
+  return _watcher
+
+
+def _init_bot(config, game, evaluator_, evaluation):
+  """Initializes a bot."""
+  noise = None if evaluation else (config.policy_epsilon, config.policy_alpha)
+  return mcts.MCTSBot(
+      game,
+      config.uct_c,
+      config.max_simulations,
+      evaluator_,
+      solve=False,
+      dirichlet_noise=noise,
+      child_selection_fn=mcts.SearchNode.puct_value,
+      verbose=False)
+
+
+def _play_game(logger, game_num, game, bots, temperature, temperature_drop):
+  """Play one game, return the trajectory."""
+  trajectory = Trajectory()
+  actions = []
+  state = game.new_initial_state()
+  logger.opt_print(" Starting game {} ".format(game_num).center(60, "-"))
+  logger.opt_print("Initial state:\n{}".format(state))
+  while not state.is_terminal():
+    root = bots[state.current_player()].mcts_search(state)
+    policy = np.zeros(game.num_distinct_actions())
+    for c in root.children:
+      policy[c.action] = c.explore_count
+    policy = policy ** (1 / temperature)
+    policy /= policy.sum()
+    if len(actions) >= temperature_drop:
+      action = root.best_child().action
+    else:
+      action = np.random.choice(len(policy), p=policy)
+    trajectory.states.append(TrajectoryState(
+        state.observation_tensor(), state.current_player(),
+        state.legal_actions_mask(), action, policy,
+        root.total_reward / root.explore_count))
+    action_str = state.action_to_string(state.current_player(), action)
+    actions.append(action_str)
+    logger.opt_print("Player {} sampled action: {}".format(
+        state.current_player(), action_str))
+    state.apply_action(action)
+  logger.opt_print("Next state:\n{}".format(state))
+
+  trajectory.returns = state.returns()
+  logger.print("Game {}: Returns: {}; Actions: {}".format(
+      game_num, " ".join(map(str, trajectory.returns)), " ".join(actions)))
+  return trajectory
+
+
+def update_checkpoint(logger, queue, model, az_evaluator):
+  """Read the queue for a checkpoint to load, or an exit signal."""
+  path = None
+  while True:  # Get the last message, ignore intermediate ones.
+    try:
+      path = queue.get_nowait()
+    except spawn.Empty:
+      break
+  if path:
+    logger.print("Inference cache:", az_evaluator.cache_info())
+    logger.print("Loading checkpoint", path)
+    model.load_checkpoint(path)
+    az_evaluator.clear_cache()
+  elif path is not None:  # Empty string means stop this process.
+    return False
+  return True
+
+
+@watcher
+def actor(*, config, game, logger, queue):
+  """An actor process runner that generates games and returns trajectories."""
+  logger.print("Initializing model")
+  model = _init_model_from_config(config)
+  logger.print("Initializing bots")
+  az_evaluator = evaluator_lib.AlphaZeroEvaluator(game, model)
+  bots = [
+      _init_bot(config, game, az_evaluator, False),
+      _init_bot(config, game, az_evaluator, False),
+  ]
+  for game_num in itertools.count():
+    if not update_checkpoint(logger, queue, model, az_evaluator):
+      return
+    queue.put(_play_game(logger, game_num, game, bots, config.temperature,
+                         config.temperature_drop))
+
+
+@watcher
+def evaluator(*, game, config, logger, queue):
+  """A process that plays the latest checkpoint vs standard MCTS."""
+  results = Buffer(config.evaluation_window)
+  logger.print("Initializing model")
+  model = _init_model_from_config(config)
+  logger.print("Initializing bots")
+  az_evaluator = evaluator_lib.AlphaZeroEvaluator(game, model)
+  random_evaluator = mcts.RandomRolloutEvaluator()
+
+  for game_num in itertools.count():
+    if not update_checkpoint(logger, queue, model, az_evaluator):
+      return
+
+    az_player = game_num % 2
+    difficulty = (game_num // 2) % config.eval_levels
+    max_simulations = int(config.max_simulations * (10 ** (difficulty / 2)))
+    bots = [
+        _init_bot(config, game, az_evaluator, True),
+        mcts.MCTSBot(
+            game,
+            config.uct_c,
+            max_simulations,
+            random_evaluator,
+            solve=True,
+            verbose=False)
+    ]
+    if az_player == 1:
+      bots = list(reversed(bots))
+
+    trajectory = _play_game(logger, game_num, game, bots, temperature=1,
+                            temperature_drop=0)
+    results.append(trajectory.returns[az_player])
+    queue.put((difficulty, trajectory.returns[az_player]))
+
+    logger.print("AZ: {}, MCTS: {}, AZ avg/{}: {:.3f}".format(
+        trajectory.returns[az_player],
+        trajectory.returns[1 - az_player],
+        len(results), np.mean(results.data)))
+
+
+@watcher
+def learner(*, game, config, actors, evaluators, broadcast_fn, logger):
+  """A learner that consumes the replay buffer and trains the network."""
+  logger.also_to_stdout = True
+  replay_buffer = Buffer(config.replay_buffer_size)
+  learn_rate = config.replay_buffer_size // config.replay_buffer_reuse
+  logger.print("Initializing model")
+  model = _init_model_from_config(config)
+  logger.print("Model type: %s(%s, %s)" % (config.nn_model, config.nn_width,
+                                           config.nn_depth))
+  logger.print("Model size:", model.num_trainable_variables, "variables")
+  save_path = model.save_checkpoint(0)
+  logger.print("Initial checkpoint:", save_path)
+  broadcast_fn(save_path)
+
+  data_log = data_logger.DataLoggerJsonLines(config.path, "learner", True)
+
+  stage_count = 7
+  value_accuracies = [stats.BasicStats() for _ in range(stage_count)]
+  value_predictions = [stats.BasicStats() for _ in range(stage_count)]
+  game_lengths = stats.BasicStats()
+  game_lengths_hist = stats.HistogramNumbered(game.max_game_length() + 1)
+  outcomes = stats.HistogramNamed(["Player1", "Player2", "Draw"])
+  evals = [Buffer(config.evaluation_window) for _ in range(config.eval_levels)]
+  total_trajectories = 0
+
+  def trajectory_generator():
+    """Merge all the actor queues into a single generator."""
+    while True:
+      found = 0
+      for actor_process in actors:
+        try:
+          yield actor_process.queue.get_nowait()
+        except spawn.Empty:
+          pass
+        else:
+          found += 1
+      if found == 0:
+        time.sleep(0.01)  # 10ms
+
+  def collect_trajectories():
+    """Collects the trajectories from actors into the replay buffer."""
+    num_trajectories = 0
+    num_states = 0
+    for trajectory in trajectory_generator():
+      num_trajectories += 1
+      num_states += len(trajectory.states)
+      game_lengths.add(len(trajectory.states))
+      game_lengths_hist.add(len(trajectory.states))
+
+      p1_outcome = trajectory.returns[0]
+      if p1_outcome > 0:
+        outcomes.add(0)
+      elif p1_outcome < 0:
+        outcomes.add(1)
+      else:
+        outcomes.add(2)
+
+      replay_buffer.extend(
+          model_lib.TrainInput(
+              s.observation, s.legals_mask, s.policy, p1_outcome)
+          for s in trajectory.states)
+
+      for stage in range(stage_count):
+        # Scale for the length of the game
+        index = (len(trajectory.states) - 1) * stage // (stage_count - 1)
+        n = trajectory.states[index]
+        accurate = (n.value >= 0) == (trajectory.returns[n.current_player] >= 0)
+        value_accuracies[stage].add(1 if accurate else 0)
+        value_predictions[stage].add(abs(n.value))
+
+      if num_states >= learn_rate:
+        break
+    return num_trajectories, num_states
+
+  def learn(step):
+    """Sample from the replay buffer, update weights and save a checkpoint."""
     losses = []
-    for epoch in range(num_training_epochs):
-      epoch_losses = []
-      for _ in range(num_epoch_iters):
-        train_data = self.replay_buffer.sample(batch_size)
-        epoch_losses.append(self.model.update(train_data))
+    for _ in range(len(replay_buffer) // config.train_batch_size):
+      data = replay_buffer.sample(config.train_batch_size)
+      losses.append(model.update(data))
 
-      epoch_losses = sum(epoch_losses, Losses(0, 0, 0)) / len(epoch_losses)
-      losses.append(epoch_losses)
-      if verbose:
-        print("Epoch {}: {}".format(epoch, epoch_losses))
+    # Always save a checkpoint, either for keeping or for loading the weights to
+    # the actors. It only allows numbers, so use -1 as "latest".
+    save_path = model.save_checkpoint(
+        step if step % config.checkpoint_freq == 0 else -1)
+    losses = sum(losses, model_lib.Losses(0, 0, 0)) / len(losses)
+    logger.print(losses)
+    logger.print("Checkpoint saved:", save_path)
+    return save_path, losses
 
-    return losses
+  last_time = time.time() - 60
+  for step in itertools.count(1):
+    for value_accuracy in value_accuracies:
+      value_accuracy.reset()
+    for value_prediction in value_predictions:
+      value_prediction.reset()
+    game_lengths.reset()
+    game_lengths_hist.reset()
+    outcomes.reset()
 
-  def self_play(self, num_self_play_games=5000):
-    """Uses the current state of the net with MCTS to play full games against.
+    num_trajectories, num_states = collect_trajectories()
+    total_trajectories += num_trajectories
+    now = time.time()
+    seconds = now - last_time
+    last_time = now
 
-    Args:
-      num_self_play_games: the number of self-play games to play using the
-        current net and MCTS.
-    """
-    for _ in range(num_self_play_games):
-      self._self_play_single()
+    logger.print("Step:", step)
+    logger.print(
+        ("Collected {:5} states from {:3} games, {:.1f} states/s. "
+         "{:.1f} states/(s*actor), game length: {:.1f}").format(
+             num_states, num_trajectories, num_states / seconds,
+             num_states / (config.actors * seconds),
+             num_states / num_trajectories))
+    logger.print("Buffer size: {}. States seen: {}".format(
+        len(replay_buffer), replay_buffer.total_seen))
 
-  def _self_play_single(self):
-    """Play a single game and add it to the replay buffer."""
-    state = self.game.new_initial_state()
-    trajectory = []
+    save_path, losses = learn(step)
 
-    while not state.is_terminal():
-      root = self.bot.mcts_search(state)
-      target_policy = np.zeros(self.game.num_distinct_actions(),
-                               dtype=np.float32)
-      for child in root.children:
-        target_policy[child.action] = child.explore_count
-      target_policy /= sum(target_policy)
+    for eval_process in evaluators:
+      while True:
+        try:
+          difficulty, outcome = eval_process.queue.get_nowait()
+          evals[difficulty].append(outcome)
+        except spawn.Empty:
+          break
 
-      trajectory.append(TrainInput(
-          state.observation_tensor(), state.legal_actions_mask(),
-          target_policy, root.total_reward / root.explore_count))
+    batch_size_stats = stats.BasicStats()  # Only makes sense in C++.
+    batch_size_stats.add(1)
+    data_log.write({
+        "step": step,
+        "total_states": replay_buffer.total_seen,
+        "states_per_s": num_states / seconds,
+        "states_per_s_actor": num_states / (config.actors * seconds),
+        "total_trajectories": total_trajectories,
+        "trajectories_per_s": num_trajectories / seconds,
+        "queue_size": 0,  # Only available in C++.
+        "game_length": game_lengths.as_dict,
+        "game_length_hist": game_lengths_hist.data,
+        "outcomes": outcomes.data,
+        "value_accuracy": [v.as_dict for v in value_accuracies],
+        "value_prediction": [v.as_dict for v in value_predictions],
+        "eval": {
+            "count": evals[0].total_seen,
+            "results": [sum(e.data) / len(e) if e else 0 for e in evals],
+        },
+        "batch_size": batch_size_stats.as_dict,
+        "batch_size_hist": [0, 1],
+        "loss": {
+            "policy": losses.policy,
+            "value": losses.value,
+            "l2reg": losses.l2,
+            "sum": losses.total,
+        },
+        "cache": {  # Null stats because it's hard to report between processes.
+            "size": 0,
+            "max_size": 0,
+            "usage": 0,
+            "requests": 0,
+            "requests_per_s": 0,
+            "hits": 0,
+            "misses": 0,
+            "misses_per_s": 0,
+            "hit_rate": 0,
+        },
+    })
+    logger.print()
 
-      action = self._select_action(root.children, len(trajectory))
-      state.apply_action(action)
+    if config.max_steps > 0 and step >= config.max_steps:
+      break
 
-    terminal_rewards = state.rewards()
-    for state in trajectory:
-      self.replay_buffer.add(
-          TrainInput(state.observation, state.legals_mask, state.policy,
-                     terminal_rewards[0]))
-
-  def _select_action(self, children, game_history_len):
-    explore_counts = [(child.explore_count, child.action) for child in children]
-    if game_history_len < self.action_selection_transition:
-      probs = np_softmax(np.array([i[0] for i in explore_counts]))
-      action_index = np.random.choice(range(len(probs)), p=probs)
-      action = explore_counts[action_index][1]
-    else:
-      _, action = max(explore_counts)
-    return action
-
-
-def np_softmax(logits):
-  max_logit = np.amax(logits, axis=-1, keepdims=True)
-  exp_logit = np.exp(logits - max_logit)
-  return exp_logit / np.sum(exp_logit, axis=-1, keepdims=True)
-
-
-class AlphaZeroKerasEvaluator(mcts.Evaluator):
-  """An AlphaZero MCTS Evaluator."""
-
-  def __init__(self, game, model):
-    """An AlphaZero MCTS Evaluator."""
-    self.model = model
-    self._input_shape = game.observation_tensor_shape()
-    self._num_actions = game.num_distinct_actions()
-
-  @functools.lru_cache(maxsize=2**12)
-  def value_and_prior(self, state):
-    # Make a singleton batch
-    obs = np.expand_dims(state.observation_tensor(), 0)
-    mask = np.expand_dims(state.legal_actions_mask(), 0)
-    value, policy = self.model.inference(obs, mask)
-    return value[0, 0], policy[0]  # Unpack batch
-
-  def evaluate(self, state):
-    value, _ = self.value_and_prior(state)
-    return np.array([value, -value])
-
-  def prior(self, state):
-    _, policy = self.value_and_prior(state)
-    return [(action, policy[action]) for action in state.legal_actions()]
-
-
-class Model(object):
-  """A wrapper around a keras model, and optimizer."""
-
-  def __init__(self, keras_model, l2_regularization, learning_rate, device):
-    """A wrapper around a keras model, and optimizer.
-
-    Args:
-      keras_model: a Keras Model object.
-      l2_regularization: the amount of l2 regularization to use during training.
-      learning_rate: a learning rate for the adam optimizer.
-      device: The device used to run the keras_model during evaluation and
-        training. Possible values are 'cpu', 'gpu', or a tf.device(...) object.
-    """
-    if device == "gpu":
-      if not tf.test.is_gpu_available():
-        raise ValueError("GPU support is unavailable.")
-      self._device = tf.device("gpu:0")
-    elif device == "cpu":
-      self._device = tf.device("cpu:0")
-    else:
-      self._device = device
-    self._keras_model = keras_model
-    self._optimizer = tf.train.AdamOptimizer(learning_rate)
-    self._l2_regularization = l2_regularization
-
-  def inference(self, obs, mask):
-    with self._device:
-      value, policy = self._keras_model(obs)
-    policy = masked_softmax.np_masked_softmax(np.array(policy), np.array(mask))
-    return value, policy
-
-  def update(self, train_inputs: Sequence[TrainInput]):
-    """Run an update step."""
-    batch = TrainInput.stack(train_inputs)
-
-    with self._device:
-      with tf.GradientTape() as tape:
-        values, policy_logits = self._keras_model(
-            batch.observation, training=True)
-        loss_value = tf.losses.mean_squared_error(
-            values, tf.stop_gradient(batch.value))
-        loss_policy = tf.nn.softmax_cross_entropy_with_logits_v2(
-            logits=policy_logits, labels=tf.stop_gradient(batch.policy))
-        loss_policy = tf.reduce_mean(loss_policy)
-        loss_l2 = 0
-        for weights in self._keras_model.trainable_variables:
-          loss_l2 += self._l2_regularization * tf.nn.l2_loss(weights)
-        loss = loss_policy + loss_value + loss_l2
-
-      grads = tape.gradient(loss, self._keras_model.trainable_variables)
-
-      self._optimizer.apply_gradients(
-          zip(grads, self._keras_model.trainable_variables),
-          global_step=tf.train.get_or_create_global_step())
-
-    return Losses(policy=float(loss_policy), value=float(loss_value),
-                  l2=float(loss_l2))
+    broadcast_fn(save_path)
 
 
-def cascade(x, fns):
-  for fn in fns:
-    x = fn(x)
-  return x
+def alpha_zero(config: Config):
+  """Start all the worker processes for a full alphazero setup."""
+  game = pyspiel.load_game(config.game)
+  config = config._replace(
+      observation_shape=game.observation_tensor_shape(),
+      output_size=game.num_distinct_actions())
 
+  print("Starting game", config.game)
+  if game.num_players() != 2:
+    sys.exit("AlphaZero can only handle 2-player games.")
+  game_type = game.get_type()
+  if game_type.reward_model != pyspiel.GameType.RewardModel.TERMINAL:
+    raise ValueError("Game must have terminal rewards.")
+  if game_type.dynamics != pyspiel.GameType.Dynamics.SEQUENTIAL:
+    raise ValueError("Game must have sequential turns.")
+  if game_type.chance_mode != pyspiel.GameType.ChanceMode.DETERMINISTIC:
+    raise ValueError("Game must be deterministic.")
 
-def keras_resnet(input_shape,
-                 num_actions,
-                 num_residual_blocks=19,
-                 num_filters=256,
-                 value_head_hidden_size=256,
-                 activation="relu",
-                 data_format="channels_last"):
-  """A ResNet implementation following AlphaGo Zero.
+  path = config.path
+  if not path:
+    path = tempfile.mkdtemp(prefix="az-{}-{}-".format(
+        datetime.datetime.now().strftime("%Y-%m-%d-%H-%M"), config.game))
+    config = config._replace(path=path)
 
-  This ResNet implementation copies as closely as possible the
-  description found in the Methods section of the AlphaGo Zero Nature paper.
-  It is mentioned in the AlphaZero Science paper supplementary material that
-  "AlphaZero uses the same network architecture as AlphaGo Zero". Note that
-  this implementation only supports flat policy distributions.
+  if not os.path.exists(path):
+    os.makedirs(path)
+  if not os.path.isdir(path):
+    sys.exit("{} isn't a directory".format(path))
+  print("Writing logs and checkpoints to:", path)
+  print("Model type: %s(%s, %s)" % (config.nn_model, config.nn_width,
+                                    config.nn_depth))
 
-  Arguments:
-    input_shape: A tuple of 3 integers specifying the non-batch dimensions of
-      input tensor shape.
-    num_actions: The determines the output size of the policy head.
-    num_residual_blocks: The number of residual blocks. Can be 0.
-    num_filters: the number of convolution filters to use in the residual blocks
-    value_head_hidden_size: number of hidden units in the value head dense layer
-    activation: the activation function to use in the net. Does not affect the
-      final tanh activation in the value head.
-    data_format: Can take values 'channels_first' or 'channels_last' (default).
-      Which input dimension to interpret as the channel dimension. The input
-      is (1, channel, width, height) with (1, width, height, channel)
-  Returns:
-    A keras Model with a single input and two outputs (value head, policy head).
-    The policy is a flat distribution over actions.
-  """
-  def residual_layer(inputs, num_filters, kernel_size):
-    return cascade(inputs, [
-        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Activation(activation),
-        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
-        tf.keras.layers.BatchNormalization(axis=-1),
-        lambda x: tf.keras.layers.add([x, inputs]),
-        tf.keras.layers.Activation(activation),
-    ])
+  with open(os.path.join(config.path, "config.json"), "w") as fp:
+    fp.write(json.dumps(config._asdict(), indent=2, sort_keys=True) + "\n")
 
-  def resnet_body(inputs, num_filters, kernel_size):
-    x = cascade(inputs, [
-        tf.keras.layers.Conv2D(num_filters, kernel_size, padding="same"),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Activation(activation),
-    ])
-    for _ in range(num_residual_blocks):
-      x = residual_layer(x, num_filters, kernel_size)
-    return x
+  actors = [spawn.Process(actor, kwargs={"game": game, "config": config,
+                                         "num": i})
+            for i in range(config.actors)]
+  evaluators = [spawn.Process(evaluator, kwargs={"game": game, "config": config,
+                                                 "num": i})
+                for i in range(config.evaluators)]
 
-  def resnet_value_head(inputs, hidden_size):
-    return cascade(inputs, [
-        tf.keras.layers.Conv2D(filters=1, kernel_size=1),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Activation(activation),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(hidden_size, activation),
-        tf.keras.layers.Dense(1, activation="tanh", name="value"),
-    ])
+  def broadcast(msg):
+    for proc in actors + evaluators:
+      proc.queue.put(msg)
 
-  def resnet_policy_head(inputs, num_classes):
-    return cascade(inputs, [
-        tf.keras.layers.Conv2D(filters=2, kernel_size=1),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Activation(activation),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(num_classes, name="policy"),
-    ])
-
-  input_size = int(np.prod(input_shape))
-  inputs = tf.keras.Input(shape=input_size, name="input")
-  torso = tf.keras.layers.Reshape(input_shape)(inputs)
-  # Note: Keras with TensorFlow 1.15 does not support the data_format arg on CPU
-  # for convolutions. Hence why this transpose is needed.
-  if data_format == "channels_first":
-    torso = tf.keras.backend.permute_dimensions(torso, (0, 2, 3, 1))
-  torso = resnet_body(torso, num_filters, 3)
-  value_head = resnet_value_head(torso, value_head_hidden_size)
-  policy_head = resnet_policy_head(torso, num_actions)
-  return tf.keras.Model(inputs=inputs, outputs=[value_head, policy_head])
-
-
-def keras_mlp(input_shape,
-              num_actions,
-              num_layers=2,
-              num_hidden=128,
-              activation="relu"):
-  """A simple MLP implementation with both a value and policy head.
-
-  Arguments:
-    input_shape: A tuple of 3 integers specifying the non-batch dimensions of
-      input tensor shape.
-    num_actions: The determines the output size of the policy head.
-    num_layers: The number of dense layers before the policy and value heads.
-    num_hidden: the number of hidden units in the dense layers.
-    activation: the activation function to use in the net. Does not affect the
-      final tanh activation in the value head.
-
-  Returns:
-    A keras Model with a single input and two outputs (value head, policy head).
-    The policy is a flat distribution over actions.
-  """
-  input_size = int(np.prod(input_shape))
-  inputs = tf.keras.Input(shape=input_size, name="input")
-  torso = inputs
-  for _ in range(num_layers):
-    torso = tf.keras.layers.Dense(num_hidden, activation=activation)(torso)
-  policy = tf.keras.layers.Dense(num_actions, name="policy")(torso)
-  value = tf.keras.layers.Dense(1, activation="tanh", name="value")(torso)
-  return tf.keras.Model(inputs=inputs, outputs=[value, policy])
+  try:
+    learner(game=game, config=config, actors=actors,  # pylint: disable=missing-kwoa
+            evaluators=evaluators, broadcast_fn=broadcast)
+  except (KeyboardInterrupt, EOFError):
+    print("Caught a KeyboardInterrupt, stopping early.")
+  finally:
+    broadcast("")
+    for proc in actors + evaluators:
+      proc.join()

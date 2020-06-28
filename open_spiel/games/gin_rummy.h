@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_H_
+#ifndef OPEN_SPIEL_GAMES_GIN_RUMMY_H_
+#define OPEN_SPIEL_GAMES_GIN_RUMMY_H_
 
 // Implementation of the classic card game:
 // https://en.wikipedia.org/wiki/Gin_rummy
@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "open_spiel/abseil-cpp/absl/types/optional.h"
 #include "open_spiel/games/gin_rummy/gin_rummy_utils.h"
 #include "open_spiel/spiel.h"
 
@@ -140,8 +141,8 @@ class GinRummyState : public State {
   Player cur_player_ = kChancePlayerId;
   Player prev_player_ = kChancePlayerId;
   bool finished_layoffs_ = false;
-  std::optional<int> upcard_;
-  std::optional<int> prev_upcard_;  // Used to track repeated moves.
+  absl::optional<int> upcard_;
+  absl::optional<int> prev_upcard_;  // Used to track repeated moves.
   int stock_size_ = kNumCards;      // Number of cards remaining in stock.
   // True if the prev player drew the upcard only to immediately discard it.
   // If both players do this in succession the game is declared a draw.
@@ -215,4 +216,4 @@ class GinRummyGame : public Game {
 }  // namespace gin_rummy
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_H_
+#endif  // OPEN_SPIEL_GAMES_GIN_RUMMY_H_

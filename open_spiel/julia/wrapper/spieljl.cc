@@ -27,7 +27,6 @@
 #include "open_spiel/matrix_game.h"
 #include "open_spiel/normal_form_game.h"
 #include "open_spiel/policy.h"
-#include "open_spiel/query.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_bots.h"
 #include "open_spiel/spiel_utils.h"
@@ -157,6 +156,9 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
         typedef typename decltype(wrapped)::type WrappedT;
         typedef typename WrappedT::key_type WrappedKey;
         typedef typename WrappedT::mapped_type WrappedVal;
+
+        wrapped.module().set_override_module(jl_base_module);
+
         wrapped.method("length", &WrappedT::size);
         wrapped.method("getindex",
                        [](WrappedT& w, WrappedKey& k) { return w[k]; });
@@ -170,14 +172,8 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
           }
           return keys;
         });
-        wrapped.method("values", [](WrappedT ps) {
-          std::vector<WrappedVal> vals;
-          vals.reserve(ps.size());
-          for (auto const& it : ps) {
-            vals.emplace_back(it.second);
-          }
-          return vals;
-        });
+
+        wrapped.module().unset_override_module();
       });
 
   mod.add_bits<open_spiel::StateType>("StateType",
@@ -258,6 +254,10 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
       .method("provides_observation_tensor",
               [](const open_spiel::GameType& gt) {
                 return gt.provides_observation_tensor;
+              })
+      .method("provides_factored_observation_string",
+              [](const open_spiel::GameType& gt) {
+                return gt.provides_factored_observation_string;
               })
       .method("parameter_specification", [](const open_spiel::GameType& gt) {
         return gt.parameter_specification;
@@ -346,6 +346,14 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
                  std::vector<double> data) {
                 return s.ObservationTensor(p, &data);
               })
+      .method("public_observation_string",
+              [](open_spiel::State& s) { return s.PublicObservationString(); })
+      .method("private_observation_string",
+              [](open_spiel::State& s) { return s.PrivateObservationString(); })
+      .method("private_observation_string",
+              [](open_spiel::State& s, open_spiel::Player p) {
+                return s.PrivateObservationString(p);
+              })
       .method("clone", &open_spiel::State::Clone)
       .method("child", &open_spiel::State::Child)
       .method("undo_action", &open_spiel::State::UndoAction)
@@ -385,7 +393,7 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   mod.add_type<open_spiel::NormalFormGame>("NormalFormGame");
 
   mod.add_type<open_spiel::matrix_game::MatrixGame>(
-         "MatrixGame", jlcxx::julia_type<open_spiel::Game>())
+         "MatrixGame", jlcxx::julia_base_type<open_spiel::Game>())
       .constructor<open_spiel::GameType, open_spiel::GameParameters,
                    std::vector<std::string>, std::vector<std::string>,
                    std::vector<double>, std::vector<double>>()
@@ -477,7 +485,7 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
   jlcxx::stl::apply_stl<const open_spiel::Policy*>(mod);
 
   mod.add_type<open_spiel::TabularPolicy>(
-         "TabularPolicy", jlcxx::julia_type<open_spiel::Policy>())
+         "TabularPolicy", jlcxx::julia_base_type<open_spiel::Policy>())
       .constructor<const open_spiel::Game&>()
       .constructor<
           const std::unordered_map<std::string, open_spiel::ActionsAndProbs>&>()
@@ -530,10 +538,15 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
 
   mod.add_type<open_spiel::algorithms::RandomRolloutEvaluator>(
          "RandomRolloutEvaluator",
-         jlcxx::julia_type<open_spiel::algorithms::Evaluator>())
+         jlcxx::julia_base_type<open_spiel::algorithms::Evaluator>())
       .constructor<int, int>()
       .method("evaluate", &open_spiel::algorithms::Evaluator::Evaluate)
       .method("prior", &open_spiel::algorithms::Evaluator::Prior);
+
+  mod.method("random_rollout_evaluator_factory", [](int rollouts, int seed) {
+    return std::shared_ptr<open_spiel::algorithms::Evaluator>(
+        new open_spiel::algorithms::RandomRolloutEvaluator(rollouts, seed));
+  });
 
   mod.add_bits<open_spiel::algorithms::ChildSelectionPolicy>(
       "ChildSelectionPolicy", jlcxx::julia_type("CppEnum"));
@@ -549,7 +562,7 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
       .method("best_child", &open_spiel::algorithms::SearchNode::BestChild)
       .method("to_string", &open_spiel::algorithms::SearchNode::ToString)
       .method("children_str", &open_spiel::algorithms::SearchNode::ChildrenStr)
-      // TODO: https://github.com/JuliaInterop/CxxWrap.jl/issues/90
+      // TODO(author11): https://github.com/JuliaInterop/CxxWrap.jl/issues/90
       .method("get_action",
               [](open_spiel::algorithms::SearchNode& sn) { return sn.action; })
       .method("get_prior",
@@ -598,8 +611,9 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
              });
 
   mod.add_type<open_spiel::algorithms::MCTSBot>(
-         "MCTSBot", jlcxx::julia_type<open_spiel::Bot>())
-      .constructor<const open_spiel::Game&, open_spiel::algorithms::Evaluator*,
+         "MCTSBot", jlcxx::julia_base_type<open_spiel::Bot>())
+      .constructor<const open_spiel::Game&,
+                   std::shared_ptr<open_spiel::algorithms::Evaluator>,
                    double, int, int64_t, bool, int, bool,
                    open_spiel::algorithms::ChildSelectionPolicy, double,
                    double>()
@@ -648,17 +662,17 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
 
   mod.add_type<open_spiel::algorithms::CFRSolver>(
          "CFRSolver",
-         jlcxx::julia_type<open_spiel::algorithms::CFRSolverBase>())
+         jlcxx::julia_base_type<open_spiel::algorithms::CFRSolverBase>())
       .constructor<const open_spiel::Game&>();
 
   mod.add_type<open_spiel::algorithms::CFRPlusSolver>(
          "CFRPlusSolver",
-         jlcxx::julia_type<open_spiel::algorithms::CFRSolverBase>())
+         jlcxx::julia_base_type<open_spiel::algorithms::CFRSolverBase>())
       .constructor<const open_spiel::Game&>();
 
   mod.add_type<open_spiel::algorithms::CFRBRSolver>(
          "CFRBRSolver",
-         jlcxx::julia_type<open_spiel::algorithms::CFRSolverBase>())
+         jlcxx::julia_base_type<open_spiel::algorithms::CFRSolverBase>())
       .constructor<const open_spiel::Game&>()
       .method("evaluate_and_update_policy",
               &open_spiel::algorithms::CFRSolver::EvaluateAndUpdatePolicy);
@@ -759,8 +773,4 @@ JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
                    game, policies, state_to_index, batch_size,
                    include_full_observations, seed, max_unroll_length);
              });
-
-  mod.method("negotiation_item_pool", &open_spiel::query::NegotiationItemPool);
-  mod.method("negotiation_agent_utils",
-             &open_spiel::query::NegotiationAgentUtils);
 }  // NOLINT(readability/fn_size)

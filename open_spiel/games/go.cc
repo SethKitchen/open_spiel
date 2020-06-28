@@ -40,11 +40,15 @@ const GameType kGameType{
     /*provides_observation_string=*/true,
     /*provides_observation_tensor=*/true,
     /*parameter_specification=*/
-    {
-        {"komi", GameParameter(7.5)},
-        {"board_size", GameParameter(19)},
-        {"handicap", GameParameter(0)},
-    },
+    {{"komi", GameParameter(7.5)},
+     {"board_size", GameParameter(19)},
+     {"handicap", GameParameter(0)},
+     // After the maximum game length, the game will end arbitrarily and the
+     // score is computed as usual (i.e. number of stones + komi).
+     // It's advised to only use shorter games to compute win-rates.
+     // When not provided, it defaults to DefaultMaxGameLength(board_size)
+     {"max_game_length",
+      GameParameter(GameParameter::Type::kInt, /*is_mandatory=*/false)}},
 };
 
 std::shared_ptr<const Game> Factory(const GameParameters& params) {
@@ -79,19 +83,26 @@ std::vector<VirtualPoint> HandicapStones(int num_handicap) {
 
 GoState::GoState(std::shared_ptr<const Game> game, int board_size, float komi,
                  int handicap)
-    : State(game),
+    : State(std::move(game)),
       board_(board_size),
       komi_(komi),
       handicap_(handicap),
+      max_game_length_(game_->MaxGameLength()),
       to_play_(GoColor::kBlack) {
   ResetBoard();
 }
 
 std::string GoState::InformationStateString(int player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
   return HistoryString();
 }
 
-std::string GoState::ObservationString(int player) const { return ToString(); }
+std::string GoState::ObservationString(int player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+  return ToString();
+}
 
 void GoState::ObservationTensor(int player, std::vector<double>* values) const {
   SPIEL_CHECK_GE(player, 0);
@@ -143,9 +154,9 @@ std::string GoState::ToString() const {
 
 bool GoState::IsTerminal() const {
   if (history_.size() < 2) return false;
-  return (history_.size() >= MaxGameLength(board_.board_size())) || superko_ ||
-         (history_[history_.size() - 1] == board_.pass_action() &&
-          history_[history_.size() - 2] == board_.pass_action());
+  return (history_.size() >= max_game_length_) || superko_ ||
+         (history_[history_.size() - 1].action == board_.pass_action() &&
+          history_[history_.size() - 2].action == board_.pass_action());
 }
 
 std::vector<double> GoState::Returns() const {
@@ -185,7 +196,7 @@ void GoState::UndoAction(Player player, Action action) {
   // replaying all actions is still pretty fast (> 1 million undos/second).
   history_.pop_back();
   ResetBoard();
-  for (Action action : history_) {
+  for (auto [_, action] : history_) {
     DoApplyAction(action);
   }
 }
@@ -222,7 +233,9 @@ GoGame::GoGame(const GameParameters& params)
     : Game(kGameType, params),
       komi_(ParameterValue<double>("komi")),
       board_size_(ParameterValue<int>("board_size")),
-      handicap_(ParameterValue<int>("handicap")) {}
+      handicap_(ParameterValue<int>("handicap")),
+      max_game_length_(ParameterValue<int>(
+          "max_game_length", DefaultMaxGameLength(board_size_))) {}
 
 }  // namespace go
 }  // namespace open_spiel

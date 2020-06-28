@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAME_PARAMETERS_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAME_PARAMETERS_H_
+#ifndef OPEN_SPIEL_GAME_PARAMETERS_H_
+#define OPEN_SPIEL_GAME_PARAMETERS_H_
 
 #include <map>
 #include <memory>
@@ -81,6 +81,10 @@ class GameParameter {
   // Used for __repr__ in the Python interface.
   std::string ToReprString() const;
 
+  // Everything necessary to reconstruct the parameter in string form:
+  // type/value/is_mandatory.
+  std::string Serialize(const std::string& delimiter = "/") const;
+
   int int_value() const {
     SPIEL_CHECK_TRUE(type_ == Type::kInt);
     return int_value_;
@@ -119,6 +123,18 @@ class GameParameter {
 
 std::string GameParameterTypeToString(const GameParameter::Type& type);
 
+// Game Parameters and Game Parameter Serialization/Deserialization form:
+// param_name=type/value/is_mandatory|param_name_2=type2/value2/is_mandatory2
+// assumes none of the delimeters appears in the string values
+std::string SerializeGameParameters(
+    const GameParameters& game_params, const std::string& name_delimiter = "=",
+    const std::string& parameter_delimeter = "|");
+GameParameters DeserializeGameParameters(
+    const std::string& data, const std::string& name_delimiter = "=",
+    const std::string& parameter_delimeter = "|");
+GameParameter DeserializeGameParameter(const std::string& data,
+                                       const std::string& delimiter = "/");
+
 inline bool IsParameterSpecified(const GameParameters& table,
                                  const std::string& key) {
   return table.find(key) != table.end();
@@ -126,4 +142,4 @@ inline bool IsParameterSpecified(const GameParameters& table,
 
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAME_PARAMETERS_H_
+#endif  // OPEN_SPIEL_GAME_PARAMETERS_H_

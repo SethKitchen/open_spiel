@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_UTILS_LRU_CACHE_H_
-#define THIRD_PARTY_OPEN_SPIEL_UTILS_LRU_CACHE_H_
+#ifndef OPEN_SPIEL_UTILS_LRU_CACHE_H_
+#define OPEN_SPIEL_UTILS_LRU_CACHE_H_
 
 #include <list>
 
@@ -96,7 +96,7 @@ class LRUCache {  // Least Recently Used Cache.
     }
   }
 
-  std::optional<const V> Get(const K& key) {
+  absl::optional<const V> Get(const K& key) {
     absl::MutexLock lock(&m_);
     auto pos = map_.find(key);
     if (pos == map_.end()) {  // Not found.
@@ -133,4 +133,4 @@ class LRUCache {  // Least Recently Used Cache.
 
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_UTILS_LRU_CACHE_H_
+#endif  // OPEN_SPIEL_UTILS_LRU_CACHE_H_

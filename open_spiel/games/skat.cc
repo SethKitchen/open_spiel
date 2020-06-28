@@ -608,8 +608,10 @@ std::vector<Action> SkatState::PlayLegalActions() const {
       // (which is required), which the special status of jacks makes hard
       // otherwise.
       for (int card = 0; card < kNumCards; ++card) {
-        if ((IsTrump(first_card) && CardRank(card) == kJack) ||
-            (suit == CardSuit(card) && CardRank(card) != kJack)) {
+        if ((IsTrump(first_card) && IsTrump(card)) ||
+            (suit == CardSuit(card) &&
+             CardRank(card) != kJack &&
+             CardRank(first_card) != kJack)) {
           if (card_locations_[card] == PlayerToLocation(current_player_)) {
             legal_actions.push_back(card);
           }
@@ -644,6 +646,9 @@ std::vector<std::pair<Action, double>> SkatState::ChanceOutcomes() const {
 
 void SkatState::ObservationTensor(Player player,
                                   std::vector<double>* values) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
   std::fill(values->begin(), values->end(), 0.0);
   values->resize(game_->ObservationTensorSize());
   if (phase_ == Phase::kGameOver || phase_ == Phase::kDeal) return;
@@ -717,6 +722,8 @@ int GetIntFromOneHot(std::vector<double>::iterator one_hot, int num_values) {
 }
 
 std::string SkatState::ObservationString(Player player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
   // We construct the ObservationString from the ObservationTensor to give
   // some indication that the tensor representation is correct & complete.
   if (phase_ == Phase::kGameOver || phase_ == Phase::kDeal) {

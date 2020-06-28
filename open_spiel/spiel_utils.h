@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_SPIEL_UTILS_H_
-#define THIRD_PARTY_OPEN_SPIEL_SPIEL_UTILS_H_
+#ifndef OPEN_SPIEL_SPIEL_UTILS_H_
+#define OPEN_SPIEL_SPIEL_UTILS_H_
 
 #include <algorithm>
 #include <array>
@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <limits>
 #include <locale>
-#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -38,6 +37,7 @@
 #include "open_spiel/abseil-cpp/absl/strings/str_split.h"
 #include "open_spiel/abseil-cpp/absl/time/clock.h"
 #include "open_spiel/abseil-cpp/absl/time/time.h"
+#include "open_spiel/abseil-cpp/absl/types/optional.h"
 
 // Code that is not part of the API, but is widely useful in implementations
 
@@ -114,8 +114,8 @@ inline constexpr float FloatingPointDefaultThresholdRatio() { return 1e-5; }
 Action RankActionMixedBase(const std::vector<int>& bases,
                            const std::vector<int>& digits);
 
-void UnrankActionMixedBase(Action action, const std::vector<int>& bases,
-                           std::vector<int>* digits);
+std::vector<int> UnrankActionMixedBase(Action action,
+                                       const std::vector<int>& bases);
 
 // Helper function to determine the next player in a round robin.
 int NextPlayerRoundRobin(Player player, int nplayers);
@@ -127,7 +127,7 @@ int PreviousPlayerRoundRobin(Player player, int nplayers);
 // 3 and filename is my.txt, it will look for ./my.txt, ../my.txt, ../../my.txt,
 // and ../../../my.txt, return the first file found or std::nullopt if not
 // found.
-std::optional<std::string> FindFile(const std::string& filename, int levels);
+absl::optional<std::string> FindFile(const std::string& filename, int levels);
 
 // Returns whether the absolute difference between floating point values a and
 // b is less than or equal to FloatingPointThresholdRatio() * max(|a|, |b|).
@@ -196,12 +196,13 @@ bool Near(T a, T b, T epsilon) {
 // Checks that x and y are equal to the default dynamic threshold proportional
 // to max(|x|, |y|).
 #define SPIEL_CHECK_FLOAT_EQ(x, y) \
-  SPIEL_CHECK_FN2(static_cast<float>(x), static_cast<float>(y), Near)
+  SPIEL_CHECK_FN2(static_cast<float>(x), static_cast<float>(y), \
+                  open_spiel::Near)
 
 // Checks that x and y are epsilon apart or closer.
 #define SPIEL_CHECK_FLOAT_NEAR(x, y, epsilon)                   \
   SPIEL_CHECK_FN3(static_cast<float>(x), static_cast<float>(y), \
-                  static_cast<float>(epsilon), Near)
+                  static_cast<float>(epsilon), open_spiel::Near)
 
 #define SPIEL_CHECK_TRUE(x)                                      \
   while (!(x))                                                   \
@@ -259,4 +260,4 @@ class UniformProbabilitySampler {
 
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_SPIEL_UTILS_H_
+#endif  // OPEN_SPIEL_SPIEL_UTILS_H_

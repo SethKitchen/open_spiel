@@ -30,11 +30,14 @@ from __future__ import print_function
 import collections
 import copy
 import numpy as np
-import sonnet as snt
 import tensorflow.compat.v1 as tf
 
 from open_spiel.python import rl_agent
+from open_spiel.python import simple_nets
 from open_spiel.python.algorithms import dqn
+
+# Temporarily disable TF2 behavior until we update the code.
+tf.disable_v2_behavior()
 
 MEM_KEY_NAME = "embedding"
 
@@ -98,7 +101,7 @@ class EVAAgent(object):
                num_neighbours=5,
                learning_rate=1e-4,
                mixing_parameter=0.9,
-               memory_capacity=1e6,
+               memory_capacity=int(1e6),
                discount_factor=1.0,
                update_target_network_every=1000,
                epsilon_start=1.0,
@@ -154,9 +157,14 @@ class EVAAgent(object):
         shape=[None, self._info_state_size],
         dtype=tf.float32,
         name="info_state_ph")
-    self._embedding_network = snt.nets.MLP(
-        list(embedding_network_layers) + [embedding_size])
+    self._embedding_network = simple_nets.MLP(self._info_state_size,
+                                              list(embedding_network_layers),
+                                              embedding_size)
     self._embedding = self._embedding_network(self._info_state_ph)
+
+    # The DQN agent requires this be an integer.
+    if not isinstance(memory_capacity, int):
+      raise ValueError("Memory capacity not an integer.")
 
     # Initialize the parametric & non-parametric Q-networks.
     self._agent = dqn.DQN(

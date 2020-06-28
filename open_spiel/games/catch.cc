@@ -148,18 +148,21 @@ std::vector<double> CatchState::Returns() const {
 }
 
 std::string CatchState::InformationStateString(Player player) const {
-  SPIEL_CHECK_EQ(player, 0);
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
   return HistoryString();
 }
 
 std::string CatchState::ObservationString(Player player) const {
-  SPIEL_CHECK_EQ(player, 0);
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
   return ToString();
 }
 
 void CatchState::ObservationTensor(Player player,
                                    std::vector<double>* values) const {
-  SPIEL_CHECK_EQ(player, 0);
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
 
   TensorView<2> view(values, {num_rows_, num_columns_}, true);
   if (initialized_) {
@@ -170,7 +173,8 @@ void CatchState::ObservationTensor(Player player,
 
 void CatchState::InformationStateTensor(Player player,
                                         std::vector<double>* values) const {
-  SPIEL_CHECK_EQ(player, 0);
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
 
   values->resize(num_columns_ + kNumActions * num_rows_);
   std::fill(values->begin(), values->end(), 0.);
@@ -178,7 +182,8 @@ void CatchState::InformationStateTensor(Player player,
     (*values)[ball_col_] = 1;
     int offset = history_.size() - ball_row_ - 1;
     for (int i = 0; i < ball_row_; i++) {
-      (*values)[num_columns_ + i * kNumActions + history_[offset + i]] = 1;
+      (*values)[num_columns_ + i * kNumActions + history_[offset + i].action] =
+          1;
     }
   }
 }

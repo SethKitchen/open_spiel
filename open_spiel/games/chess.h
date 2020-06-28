@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAMES_CHESS_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAMES_CHESS_H_
+#ifndef OPEN_SPIEL_GAMES_CHESS_H_
+#define OPEN_SPIEL_GAMES_CHESS_H_
 
 #include <array>
 #include <cstring>
@@ -194,7 +194,7 @@ class ChessState : public State {
   // IsTerminal(), which is also called by LegalActions().
   void MaybeGenerateLegalActions() const;
 
-  std::optional<std::vector<double>> MaybeFinalReturns() const;
+  absl::optional<std::vector<double>> MaybeFinalReturns() const;
 
   // We have to store every move made to check for repetitions and to implement
   // undo. We store the current board position as an optimization.
@@ -217,7 +217,7 @@ class ChessState : public State {
   };
   using RepetitionTable = absl::flat_hash_map<uint64_t, int, PassthroughHash>;
   RepetitionTable repetitions_;
-  mutable std::optional<std::vector<Action>> cached_legal_actions_;
+  mutable absl::optional<std::vector<Action>> cached_legal_actions_;
 };
 
 // Game object.
@@ -249,4 +249,4 @@ class ChessGame : public Game {
 }  // namespace chess
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAMES_CHESS_H_
+#endif  // OPEN_SPIEL_GAMES_CHESS_H_

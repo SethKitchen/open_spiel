@@ -17,13 +17,13 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
-#include <optional>
 #include <random>
 #include <set>
 #include <string>
 
 #include "open_spiel/abseil-cpp/absl/random/uniform_int_distribution.h"
 #include "open_spiel/abseil-cpp/absl/time/clock.h"
+#include "open_spiel/abseil-cpp/absl/types/optional.h"
 #include "open_spiel/game_transforms/turn_based_simultaneous_game.h"
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_utils.h"
@@ -219,6 +219,39 @@ void CheckReturnsSum(const Game& game, const State& state) {
   }
 }
 
+// Tests all observation and information_state related methods which are
+// supported by the game, for all players.
+//
+// The following functions should return valid outputs for valid player, even
+// on terminal states:
+// - std::string InformationStateString(Player player)
+// - std::vector<double> InformationStateTensor(Player player)
+// - std::string ObservationString(Player player)
+// - std::vector<double> ObservationTensor(Player player)
+//
+// These functions should crash on invalid players: this is tested in
+// api_test.py as it's simpler to catch the error from Python.
+void CheckObservables(const Game& game, const State& state) {
+  for (auto p = Player{0}; p < game.NumPlayers(); ++p) {
+    if (game.GetType().provides_information_state_tensor) {
+      std::vector<double> v = state.InformationStateTensor(p);
+      SPIEL_CHECK_EQ(v.size(), game.InformationStateTensorSize());
+    }
+    if (game.GetType().provides_observation_tensor) {
+      std::vector<double> v = state.ObservationTensor(p);
+      SPIEL_CHECK_EQ(v.size(), game.ObservationTensorSize());
+    }
+    if (game.GetType().provides_information_state_string) {
+      // Checking it does not raise errors.
+      state.InformationStateString(p);
+    }
+    if (game.GetType().provides_observation_string) {
+      // Checking it does not have errors.
+      state.ObservationString(p);
+    }
+  }
+}
+
 void RandomSimulation(std::mt19937* rng, const Game& game, bool undo,
                       bool serialize) {
   std::vector<HistoryItem> history;
@@ -301,18 +334,7 @@ void RandomSimulation(std::mt19937* rng, const Game& game, bool undo,
         std::cout << "player " << p << " chose "
                   << state->ActionToString(p, action) << std::endl;
 
-        // Check the information state, if supported.
-        if (infostate_vector_size > 0) {
-          std::vector<double> infostate_vector =
-              state->InformationStateTensor(p);
-          SPIEL_CHECK_EQ(infostate_vector.size(), infostate_vector_size);
-        }
-
-        // Check the observation state vector, if supported.
-        if (observation_vector_size > 0) {
-          std::vector<double> obs_vector = state->ObservationTensor(p);
-          SPIEL_CHECK_EQ(obs_vector.size(), observation_vector_size);
-        }
+        CheckObservables(game, *state);
       }
 
       ApplyActionTestClone(game, state.get(), joint_action);
@@ -328,18 +350,7 @@ void RandomSimulation(std::mt19937* rng, const Game& game, bool undo,
       // Decision node.
       Player player = state->CurrentPlayer();
 
-      // First, check the information state vector, if supported.
-      if (infostate_vector_size > 0) {
-        std::vector<double> infostate_vector =
-            state->InformationStateTensor(player);
-        SPIEL_CHECK_EQ(infostate_vector.size(), infostate_vector_size);
-      }
-
-      // Check the observation state vector, if supported.
-      if (observation_vector_size > 0) {
-        std::vector<double> obs_vector = state->ObservationTensor(player);
-        SPIEL_CHECK_EQ(obs_vector.size(), observation_vector_size);
-      }
+      CheckObservables(game, *state);
 
       // Sample an action uniformly.
       std::vector<Action> actions = state->LegalActions();
@@ -379,12 +390,7 @@ void RandomSimulation(std::mt19937* rng, const Game& game, bool undo,
 
   // Check the information state of the terminal, too. This is commonly needed,
   // for example, as a final observation in an RL environment.
-  for (auto p = Player{0}; p < game.NumPlayers(); p++) {
-    if (infostate_vector_size > 0) {
-      std::vector<double> infostate_vector = state->InformationStateTensor(p);
-      SPIEL_CHECK_EQ(infostate_vector.size(), infostate_vector_size);
-    }
-  }
+  CheckObservables(game, *state);
 
   // Check that the returns satisfy the constraints based on the game type.
   CheckReturnsSum(game, *state);

@@ -74,6 +74,38 @@ endif()
 set (BUILD_WITH_JULIA $ENV{BUILD_WITH_JULIA})
 message("${BoldYellow}BUILD_WITH_JULIA: ${BUILD_WITH_JULIA} ${ColourReset}")
 
+set (BUILD_WITH_PYTHON ON CACHE BOOL "Build binary for Python.")
+if(NOT DEFINED ENV{BUILD_WITH_PYTHON})
+    message("${BoldRed}BUILD_WITH_PYTHON not set. Defaults to ON${ColourReset}")
+    set (ENV{BUILD_WITH_PYTHON} ON)
+endif()
+set (BUILD_WITH_PYTHON $ENV{BUILD_WITH_PYTHON})
+message("${BoldYellow}BUILD_WITH_PYTHON: ${BUILD_WITH_PYTHON} ${ColourReset}")
+
+set (BUILD_WITH_PUBLIC_STATES OFF CACHE BOOL "Build with support for public states in C++.")
+if(NOT DEFINED ENV{BUILD_WITH_PUBLIC_STATES})
+  message("${BoldRed}BUILD_WITH_PUBLIC_STATES not set. Defaults to OFF${ColourReset}")
+  set (ENV{BUILD_WITH_PUBLIC_STATES} OFF)
+endif()
+set (BUILD_WITH_PUBLIC_STATES $ENV{BUILD_WITH_PUBLIC_STATES})
+message("${BoldYellow}BUILD_WITH_PUBLIC_STATES: ${BUILD_WITH_PUBLIC_STATES} ${ColourReset}")
+
+set (BUILD_WITH_EIGEN OFF CACHE BOOL "Build with support for Eigen in C++.")
+if(NOT DEFINED ENV{BUILD_WITH_EIGEN})
+    message("${BoldRed}BUILD_WITH_EIGEN not set. Defaults to OFF${ColourReset}")
+    set (ENV{BUILD_WITH_EIGEN} OFF)
+endif()
+set (BUILD_WITH_EIGEN $ENV{BUILD_WITH_EIGEN})
+message("${BoldYellow}BUILD_WITH_EIGEN: ${BUILD_WITH_EIGEN} ${ColourReset}")
+
+set (BUILD_WITH_XINXIN OFF CACHE BOOL "Build against xinxin Hearts program.")
+if(NOT DEFINED ENV{BUILD_WITH_XINXIN})
+    message("${BoldRed}BUILD_WITH_XINXIN not set. Defaults to OFF${ColourReset}")
+    set (ENV{BUILD_WITH_XINXIN} OFF)
+endif()
+set (BUILD_WITH_XINXIN $ENV{BUILD_WITH_XINXIN})
+message("${BoldYellow}BUILD_WITH_XINXIN: ${BUILD_WITH_XINXIN} ${ColourReset}")
+
 ##
 
 
@@ -85,6 +117,8 @@ set (BUILD_TESTING OFF)
 enable_testing()
 
 set (OPEN_SPIEL_CORE_FILES
+  canonical_game_strings.h
+  canonical_game_strings.cc
   game_parameters.h
   game_parameters.cc
   spiel.h
@@ -103,8 +137,6 @@ set (OPEN_SPIEL_CORE_FILES
   tensor_game.h
   tensor_game.cc
 )
-
-set (OPEN_SPIEL_QUERY_FILES query.cc query.h)
 
 # We add the subdirectory here so open_spiel_core can #include absl.
 add_subdirectory (abseil-cpp)
@@ -127,15 +159,10 @@ link_libraries(open_spiel_core
 # Just the minimal base library: no games.
 set (OPEN_SPIEL_CORE_OBJECTS $<TARGET_OBJECTS:open_spiel_core>)
 
-# Query API objects
-add_library(open_spiel_query OBJECT ${OPEN_SPIEL_QUERY_FILES})
-target_include_directories (open_spiel_query PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
 set (OPEN_SPIEL_OBJECTS
   $<TARGET_OBJECTS:open_spiel_core>
   $<TARGET_OBJECTS:games>
   $<TARGET_OBJECTS:game_transforms>
-  $<TARGET_OBJECTS:open_spiel_query>
   $<TARGET_OBJECTS:bridge_double_dummy_solver>
   $<TARGET_OBJECTS:algorithms>
   $<TARGET_OBJECTS:utils>
@@ -145,6 +172,26 @@ if (BUILD_WITH_HANABI)
 endif()
 if (BUILD_WITH_ACPC)
   set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:universal_poker_clib> $<TARGET_OBJECTS:universal_poker_lib>)
+endif()
+if (BUILD_WITH_EIGEN)
+  add_compile_definitions(BUILD_WITH_EIGEN)
+  # Add Eigen dependency.
+  add_subdirectory(eigen/)
+  # Now we can use #include "Eigen/Dense"
+  # This is needed so that pybind11/eigen.h locates <Eigen/Core>
+  include_directories(eigen/libeigen)
+  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:eigen>)
+endif()
+if (BUILD_WITH_PUBLIC_STATES)
+  if (NOT BUILD_WITH_EIGEN)
+    message(FATAL_ERROR "You want to build with public states API, but Eigen dependency is not enabled. Please enable BUILD_WITH_EIGEN=ON")
+  endif()
+  add_compile_definitions(BUILD_WITH_PUBLIC_STATES)
+  add_subdirectory(public_states)
+  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:public_states>)
+endif()
+if (BUILD_WITH_XINXIN)
+  set(OPEN_SPIEL_OBJECTS ${OPEN_SPIEL_OBJECTS} $<TARGET_OBJECTS:xinxin>)
 endif()
 
 # We have the parent of this directory in the include path, so that we can
@@ -157,7 +204,11 @@ add_subdirectory (examples)
 add_subdirectory (games)
 add_subdirectory (game_transforms)
 add_subdirectory (tests)
-add_subdirectory (python)
+
+if (BUILD_WITH_PYTHON)
+  add_subdirectory (python)
+endif()
+
 add_subdirectory (utils)
 
 if (BUILD_WITH_JULIA)

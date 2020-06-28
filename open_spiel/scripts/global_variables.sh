@@ -26,6 +26,9 @@
 # particular to be able to use that in the Travis CI test.
 export DEFAULT_OPTIONAL_DEPENDENCY=${DEFAULT_OPTIONAL_DEPENDENCY:-"OFF"}
 
+# Building the Python API can be disabled by setting this to OFF.
+export BUILD_WITH_PYTHON=${BUILD_WITH_PYTHON:-"ON"}
+
 # Each optional dependency has their own flag, that defaults to the global
 # "$DEFAULT_OPTIONAL_DEPENDENCY" if undefined. To enable an optional dependency,
 # we recomment defining the associated environment variable in your bashrc or
@@ -33,3 +36,8 @@ export DEFAULT_OPTIONAL_DEPENDENCY=${DEFAULT_OPTIONAL_DEPENDENCY:-"OFF"}
 export BUILD_WITH_HANABI=${BUILD_WITH_HANABI:-$DEFAULT_OPTIONAL_DEPENDENCY}
 export BUILD_WITH_ACPC=${BUILD_WITH_ACPC:-$DEFAULT_OPTIONAL_DEPENDENCY}
 export BUILD_WITH_JULIA=${BUILD_WITH_JULIA:-$DEFAULT_OPTIONAL_DEPENDENCY}
+export BUILD_WITH_EIGEN=${BUILD_WITH_EIGEN:-$DEFAULT_OPTIONAL_DEPENDENCY}
+export BUILD_WITH_XINXIN=${BUILD_WITH_XINXIN:-$DEFAULT_OPTIONAL_DEPENDENCY}
+
+# Turn off public states as it is Work-In-Progress.
+export BUILD_WITH_PUBLIC_STATES=OFF

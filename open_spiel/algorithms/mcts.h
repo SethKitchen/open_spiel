@@ -12,11 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_MCTS_H_
-#define THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_MCTS_H_
+#ifndef OPEN_SPIEL_ALGORITHMS_MCTS_H_
+#define OPEN_SPIEL_ALGORITHMS_MCTS_H_
+
+#include <stdint.h>
 
 #include <memory>
 #include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "open_spiel/spiel.h"
 #include "open_spiel/spiel_bots.h"
@@ -139,9 +144,19 @@ struct SearchNode {
 // A SpielBot that uses the MCTS algorithm as its policy.
 class MCTSBot : public Bot {
  public:
+  // The evaluator is passed as a shared pointer to make it explicit that
+  // the same evaluator instance can be passed to multiple bots and to
+  // make the MCTSBot Python interface work regardless of the scope of the
+  // Python evaluator object.
+  //
+  // TODO(author5): The second parameter needs to be a const reference at the
+  // moment, even though it gets assigned to a member of type
+  // std::shared_ptr<Evaluator>. This is because using a
+  // std::shared_ptr<Evaluator> in the constructor leads to the Julia API test
+  // failing. We don't know why right now, but intend to fix this.
   MCTSBot(
-      const Game& game, Evaluator* evaluator, double uct_c,
-      int max_simulations,
+      const Game& game, std::shared_ptr<Evaluator> evaluator,
+      double uct_c, int max_simulations,
       int64_t max_memory_mb,  // Max memory use in megabytes.
       bool solve,             // Whether to back up solved states.
       int seed, bool verbose,
@@ -194,7 +209,7 @@ class MCTSBot : public Bot {
   double dirichlet_epsilon_;
   std::mt19937 rng_;
   const ChildSelectionPolicy child_selection_policy_;
-  Evaluator* evaluator_;
+  std::shared_ptr<Evaluator> evaluator_;
 };
 
 // Returns a vector of noise sampled from a dirichlet distribution. See:
@@ -204,4 +219,4 @@ std::vector<double> dirichlet_noise(int count, double alpha, std::mt19937* rng);
 }  // namespace algorithms
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_MCTS_H_
+#endif  // OPEN_SPIEL_ALGORITHMS_MCTS_H_

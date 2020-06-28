@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_
-#define THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_
+#ifndef OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_
+#define OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_
 
-#include <limits>
+#include <stdint.h>
+
+#include <memory>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -140,4 +143,4 @@ class TrajectoryRecorder {
 }  // namespace algorithms
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_
+#endif  // OPEN_SPIEL_ALGORITHMS_TRAJECTORIES_H_

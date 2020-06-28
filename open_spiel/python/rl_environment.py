@@ -125,6 +125,9 @@ class ChanceEventSampler(object):
   """Default sampler for external chance events."""
 
   def __init__(self, seed=None):
+    self.seed(seed)
+
+  def seed(self, seed=None):
     self._rng = np.random.RandomState(seed)
 
   def __call__(self, state):
@@ -197,6 +200,9 @@ class Environment(object):
         raise ValueError("information_state_tensor not supported by " + game)
     self._use_observation = (observation_type == ObservationType.OBSERVATION)
 
+  def seed(self, seed=None):
+    self._chance_event_sampler.seed(seed)
+
   def get_time_step(self):
     """Returns a `TimeStep` without updating the environment.
 
@@ -224,11 +230,15 @@ class Environment(object):
 
       observations["legal_actions"].append(self._state.legal_actions(player_id))
     observations["current_player"] = self._state.current_player()
+    discounts = self._discounts
+    if step_type == StepType.LAST:
+      # When the game is in a terminal state set the discount to 0.
+      discounts = [0. for _ in discounts]
 
     return TimeStep(
         observations=observations,
         rewards=rewards,
-        discounts=self._discounts,
+        discounts=discounts,
         step_type=step_type)
 
   def step(self, actions):

@@ -144,11 +144,8 @@ std::string UncontestedBiddingState::ToString() const {
   if (IsTerminal()) {
     absl::StrAppend(&rv, " Score:", score_);
     for (int i = 0; i < reference_contracts_.size(); ++i) {
-      absl::StrAppend(
-          &rv, " ", reference_contracts_[i].level,
-          std::string(1, kDenominationChar[reference_contracts_[i].trumps]),
-          "(", std::string(1, "WE"[reference_contracts_[i].declarer]),
-          "):", reference_scores_[i]);
+      absl::StrAppend(&rv, " ", reference_contracts_[i].ToString(), ":",
+                      reference_scores_[i]);
     }
   }
   return rv;
@@ -181,6 +178,9 @@ std::string UncontestedBiddingState::AuctionString() const {
 
 std::string UncontestedBiddingState::InformationStateString(
     Player player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
   if (!dealt_) return "";
   return absl::StrCat(deal_.HandString(player * 13, (player + 1) * 13), " ",
                       AuctionString());
@@ -188,6 +188,9 @@ std::string UncontestedBiddingState::InformationStateString(
 
 void UncontestedBiddingState::InformationStateTensor(
     Player player, std::vector<double>* values) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
   values->resize(kStateSize);
   std::fill(values->begin(), values->end(), 0.);
   auto ptr = values->begin();

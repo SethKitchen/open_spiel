@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAMES_GO_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAMES_GO_H_
+#ifndef OPEN_SPIEL_GAMES_GO_H_
+#define OPEN_SPIEL_GAMES_GO_H_
 
 #include <array>
 #include <cstring>
@@ -55,10 +55,13 @@ inline int NumDistinctActions(int board_size) {
 
 // In theory Go games have no length limit, but we limit them to twice the
 // number of points on the board for practicality - only random games last
-// this long.
-inline int MaxGameLength(int board_size) { return board_size * board_size * 2; }
+// this long. This value can also be overriden when creating the game.
+inline int DefaultMaxGameLength(int board_size) {
+  return board_size * board_size * 2;
+}
 
 inline int ColorToPlayer(GoColor c) { return static_cast<int>(c); }
+inline GoColor PlayerToColor(Player p) { return static_cast<GoColor>(p); }
 
 // State of an in-play game.
 // Actions are contiguous from 0 to board_size * board_size - 1, row-major, i.e.
@@ -116,6 +119,7 @@ class GoState : public State {
 
   const float komi_;
   const int handicap_;
+  const int max_game_length_;
   GoColor to_play_;
   bool superko_;
 };
@@ -140,6 +144,10 @@ class GoGame : public Game {
     return {CellStates() + 1, board_size_, board_size_};
   }
 
+  TensorLayout ObservationTensorLayout() const override {
+    return TensorLayout::kCHW;
+  }
+
   int NumPlayers() const override { return go::NumPlayers(); }
 
   double MinUtility() const override { return LossUtility(); }
@@ -149,15 +157,16 @@ class GoGame : public Game {
     return std::shared_ptr<const Game>(new GoGame(*this));
   }
 
-  int MaxGameLength() const override { return go::MaxGameLength(board_size_); }
+  int MaxGameLength() const override { return max_game_length_; }
 
  private:
   const float komi_;
   const int board_size_;
   const int handicap_;
+  const int max_game_length_;
 };
 
 }  // namespace go
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAMES_GO_H_
+#endif  // OPEN_SPIEL_GAMES_GO_H_

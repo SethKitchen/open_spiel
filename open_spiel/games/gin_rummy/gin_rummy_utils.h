@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_
+#ifndef OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_
+#define OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_
 
 #include <map>
 #include <string>
 #include <vector>
+
+#include "open_spiel/abseil-cpp/absl/types/optional.h"
 
 namespace open_spiel {
 namespace gin_rummy {
@@ -31,7 +33,7 @@ using VecInt = std::vector<int>;
 using VecVecInt = std::vector<std::vector<int>>;
 using VecVecVecInt = std::vector<std::vector<std::vector<int>>>;
 
-std::string CardString(std::optional<int> card);
+std::string CardString(absl::optional<int> card);
 std::string HandToString(const VecInt &cards);
 
 int CardInt(std::string card);
@@ -66,7 +68,7 @@ VecVecVecInt AllMeldGroups(const VecInt &cards);
 
 VecVecInt BestMeldGroup(const VecInt &cards);
 
-int MinDeadwood(VecInt hand, std::optional<int> card);
+int MinDeadwood(VecInt hand, absl::optional<int> card);
 int MinDeadwood(const VecInt &hand);
 
 int RankMeldLayoff(const VecInt &meld);
@@ -88,4 +90,4 @@ static const std::map<VecInt, int> meld_to_int = BuildMeldToIntMap();
 }  // namespace gin_rummy
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_
+#endif  // OPEN_SPIEL_GAMES_GIN_RUMMY_UTILS_H_

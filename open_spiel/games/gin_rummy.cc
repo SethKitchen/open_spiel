@@ -566,13 +566,16 @@ std::unique_ptr<State> GinRummyState::Clone() const {
 }
 
 std::string GinRummyState::ObservationString(Player player) const {
+  SPIEL_CHECK_GE(player, 0);
+  SPIEL_CHECK_LT(player, num_players_);
+
   // Built from ObservationTensor to provide an extra check.
   std::vector<double> tensor(game_->ObservationTensorSize());
   ObservationTensor(player, &tensor);
   std::vector<int> hand;
   std::vector<int> discard_pile;
   std::vector<int> layed_melds;
-  std::optional<int> upcard;
+  absl::optional<int> upcard;
   int knock_card = 0;
   int stock_size = 0;
 

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_
-#define THIRD_PARTY_OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_
+#ifndef OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_
+#define OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "open_spiel/spiel.h"
@@ -116,8 +117,7 @@ class TurnBasedSimultaneousGame : public Game {
   std::shared_ptr<const Game> game_;
 };
 
-// Equivalent loader functions that return back the transformed game.
-// Important: takes ownership of the game that is passed in.
+// Return back a transformed clone of the game.
 std::shared_ptr<const Game> ConvertToTurnBased(const Game& game);
 
 // These are equivalent to LoadGame but converts the game to turn-based if it is
@@ -128,4 +128,4 @@ std::shared_ptr<const Game> LoadGameAsTurnBased(const std::string& name,
 
 }  // namespace open_spiel
 
-#endif  // THIRD_PARTY_OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_
+#endif  // OPEN_SPIEL_GAME_TRANSFORMS_TURN_BASED_SIMULTANEOUS_GAME_H_

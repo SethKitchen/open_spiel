@@ -41,10 +41,12 @@ class PyspielTest(absltest.TestCase):
         "catch",
         "chess",
         "cliff_walking",
+        "clobber",
         "coin_game",
         "connect_four",
         "coop_box_pushing",
         "coop_to_1p",
+        "coordinated_mp",
         "cursor_go",
         "deep_sea",
         "efg_game",
@@ -54,8 +56,10 @@ class PyspielTest(absltest.TestCase):
         "goofspiel",
         "havannah",
         "hex",
+        "hearts",
         "kuhn_poker",
         "laser_tag",
+        "lewis_signaling",
         "leduc_poker",
         "liars_dice",
         "markov_soccer",
@@ -72,6 +76,7 @@ class PyspielTest(absltest.TestCase):
         "negotiation",
         "normal_form_extensive_game",
         "oshi_zumo",
+        "othello",
         "oware",
         "pentago",
         "phantom_ttt",
@@ -82,6 +87,7 @@ class PyspielTest(absltest.TestCase):
         "tiny_bridge_2p",
         "tiny_bridge_4p",
         "tiny_hanabi",
+        "trade_comm",
         "turn_based_simultaneous_game",
         "y",
     ])
@@ -151,6 +157,13 @@ class PyspielTest(absltest.TestCase):
     clone = state.resample_from_infostate(1, sampler)
     self.assertEqual(
         clone.information_state_string(1), state.information_state_string(1))
+
+  def test_othello(self):
+    game = pyspiel.load_game("othello")
+    state = game.new_initial_state()
+    self.assertFalse(state.is_chance_node())
+    self.assertFalse(state.is_terminal())
+    self.assertEqual(state.legal_actions(), [19, 26, 37, 44])
 
   def test_tic_tac_toe(self):
     game = pyspiel.load_game("tic_tac_toe")
